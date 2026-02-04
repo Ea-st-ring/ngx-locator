@@ -1,6 +1,7 @@
 # ngx-locatorjs (Open-in-Editor)
 
 브라우저에서 Alt+클릭으로 Angular 컴포넌트 파일을 에디터에서 바로 여는 개발용 도구입니다. Angular 프로젝트 어디에나 npm 패키지로 설치해 사용할 수 있습니다.
+이 프로젝트는 [locatorjs.com](https://www.locatorjs.com/)에서 영감을 받았습니다.
 
 **기능**
 - Alt+클릭: 템플릿(.html) 열기

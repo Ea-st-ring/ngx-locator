@@ -6,6 +6,7 @@ Open Angular component files directly from the browser with **Alt + Click** duri
 - Browser runtime for Alt+click / hover UI
 - CLI tools to scan Angular components and open files in your editor
 - Config + proxy setup guidance
+Inspired by [locatorjs.com](https://www.locatorjs.com/).
 
 ## Features
 - **Alt + Click**: open template (.html)
