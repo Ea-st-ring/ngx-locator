@@ -5,8 +5,8 @@ type CmpInfo = {
 };
 
 type CmpMap = {
-  bySelector: Record<string, string[]>;
   detailByFilePath: Record<string, CmpInfo>;
+  filePathsByClassName: Record<string, string[]>;
 };
 
 export type AngularLocatorEndpoints = {
@@ -55,6 +55,21 @@ let OPTIONS: ResolvedOptions = DEFAULT_OPTIONS;
 let INSTALLED = false;
 
 let CMP_MAP: CmpMap | null = null;
+let mapLoadPromise: Promise<CmpMap | undefined> | null = null;
+
+function normalizeMap(map: CmpMap): CmpMap {
+  if (!map.filePathsByClassName || Object.keys(map.filePathsByClassName).length === 0) {
+    const rebuilt: Record<string, string[]> = {};
+    Object.values(map.detailByFilePath).forEach((info) => {
+      if (!rebuilt[info.className]) rebuilt[info.className] = [];
+      if (!rebuilt[info.className].includes(info.filePath)) {
+        rebuilt[info.className].push(info.filePath);
+      }
+    });
+    map.filePathsByClassName = rebuilt;
+  }
+  return map;
+}
 async function ensureMap(forceRefresh = false): Promise<CmpMap> {
   if (CMP_MAP && !forceRefresh) return CMP_MAP;
 
@@ -71,7 +86,7 @@ async function ensureMap(forceRefresh = false): Promise<CmpMap> {
   const text = await res.text();
 
   try {
-    CMP_MAP = JSON.parse(text);
+    CMP_MAP = normalizeMap(JSON.parse(text));
     return CMP_MAP!;
   } catch (e) {
     if (OPTIONS.debug) {
@@ -79,6 +94,15 @@ async function ensureMap(forceRefresh = false): Promise<CmpMap> {
     }
     throw new Error(`Failed to parse response as JSON. Got: ${text.substring(0, 100)}`);
   }
+}
+
+function ensureMapIfNeeded() {
+  if (CMP_MAP || mapLoadPromise) return;
+  mapLoadPromise = ensureMap()
+    .catch(() => undefined)
+    .finally(() => {
+      mapLoadPromise = null;
+    });
 }
 
 /**
@@ -135,35 +159,73 @@ function selectBestMatchingFile(candidates: string[]): string {
   return bestMatch;
 }
 
-function getNearestComponent(el: Element): any | null {
+function getComponentInfoByClassName(className: string): CmpInfo | null {
+  if (!CMP_MAP) return null;
+  const classNameCandidates = getClassNameCandidates(className);
+
+  for (const candidate of classNameCandidates) {
+    const candidates = CMP_MAP.filePathsByClassName?.[candidate];
+    if (!candidates?.length) continue;
+
+    const filePath = selectBestMatchingFile(candidates);
+    const info = CMP_MAP.detailByFilePath[filePath] ?? null;
+    if (info) return info;
+  }
+
+  return null;
+}
+
+function getClassNameCandidates(className: string): string[] {
+  const candidates: string[] = [];
+  const push = (value: string | undefined) => {
+    if (!value) return;
+    if (!candidates.includes(value)) candidates.push(value);
+  };
+
+  push(className);
+
+  const trimmed = className.replace(/^_+/, '');
+  push(trimmed);
+
+  return candidates;
+}
+
+function getAngularRuntimeComponent(el: Element): any | null {
+  const ng = (window as any).ng;
+  if (!ng) return null;
+
+  const getComponentFn = ng.getOwningComponent || ng.getComponent;
+  if (typeof getComponentFn !== 'function') return null;
+
   let cur: Element | null = el;
   while (cur) {
-    const tagName = cur.tagName.toLowerCase();
-
-    if (tagName.includes('-')) {
-      if (CMP_MAP) {
-        const candidates = CMP_MAP.bySelector[tagName];
-        if (candidates?.length) {
-          const filePath = selectBestMatchingFile(candidates);
-          const cmpInfo = CMP_MAP.detailByFilePath[filePath];
-          if (cmpInfo) {
-            return {
-              constructor: { name: cmpInfo.className },
-              __isMockComponent: true,
-              __cmpInfo: cmpInfo,
-            };
-          }
-        }
-      }
+    try {
+      const cmp = getComponentFn(cur);
+      if (cmp) return cmp;
+    } catch {
+      // ignore
     }
-
     cur = cur.parentElement;
   }
 
-  if (OPTIONS.debug) {
-    console.log('[angular-locator] No component found.');
-  }
   return null;
+}
+
+function getNearestComponent(el: Element): any | null {
+  if (!CMP_MAP) return null;
+
+  const runtimeComponent = getAngularRuntimeComponent(el);
+  const runtimeClassName = runtimeComponent?.constructor?.name;
+  if (!runtimeClassName) return null;
+
+  const info = getComponentInfoByClassName(runtimeClassName);
+  if (!info) return null;
+
+  return {
+    constructor: { name: info.className },
+    __isMockComponent: true,
+    __cmpInfo: info,
+  };
 }
 
 async function openFile(absPath: string, line = 1, col = 1) {
@@ -310,12 +372,7 @@ function findTemplatePosition(
   return { searchTerms };
 }
 
-async function handleAltClick(ev: MouseEvent) {
-  if (!OPTIONS.enableClick) return;
-  if (!ev.altKey) return;
-  ev.preventDefault();
-  ev.stopPropagation();
-
+async function handleAltOpen(ev: MouseEvent | PointerEvent, el: Element) {
   if (!CMP_MAP) {
     try {
       await ensureMap();
@@ -326,7 +383,6 @@ async function handleAltClick(ev: MouseEvent) {
     }
   }
 
-  const el = ev.target as Element;
   const cmp = getNearestComponent(el);
   if (!cmp) return;
 
@@ -373,6 +429,19 @@ async function handleAltClick(ev: MouseEvent) {
   }
 }
 
+async function handleAltClick(ev: MouseEvent) {
+  if (!OPTIONS.enableClick) return;
+  if (!ev.altKey) return;
+
+  ev.preventDefault();
+  ev.stopPropagation();
+
+  const el = ev.target as Element | null;
+  if (!el) return;
+
+  await handleAltOpen(ev, el);
+}
+
 let isAltPressed = false;
 let currentTooltip: HTMLElement | null = null;
 let currentHighlightOverlay: HTMLElement | null = null;
@@ -391,7 +460,19 @@ function removeHighlights() {
 
 async function handleMouseMove(ev: MouseEvent) {
   if (!OPTIONS.enableHover) return;
-  if (!isAltPressed) return;
+  if (!isAltPressed || !ev.altKey) {
+    if (isAltPressed && !ev.altKey) {
+      isAltPressed = false;
+      document.removeEventListener('mousemove', handleMouseMove);
+      removeHighlights();
+    }
+    return;
+  }
+
+  if (!CMP_MAP) {
+    ensureMapIfNeeded();
+    return;
+  }
 
   const el = ev.target as Element;
   if (lastHighlightedElement === el) return;
@@ -438,14 +519,15 @@ async function handleMouseMove(ev: MouseEvent) {
 
 function handleKeyDown(ev: KeyboardEvent) {
   if (!OPTIONS.enableHover) return;
-  if (ev.key === 'Alt' && !isAltPressed) {
+  if ((ev.key === 'Alt' || ev.key === 'AltGraph') && !isAltPressed) {
     isAltPressed = true;
     document.addEventListener('mousemove', handleMouseMove);
   }
 }
 
 function handleKeyUp(ev: KeyboardEvent) {
-  if (ev.key === 'Alt' && isAltPressed) {
+  if (!OPTIONS.enableHover) return;
+  if ((ev.key === 'Alt' || ev.key === 'AltGraph' || !ev.altKey) && isAltPressed) {
     isAltPressed = false;
     document.removeEventListener('mousemove', handleMouseMove);
     removeHighlights();

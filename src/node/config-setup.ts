@@ -9,12 +9,16 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const root = process.cwd();
-const configPath = path.resolve(root, 'open-in-editor.config.json');
+const CONFIG_FILENAME = 'ngx-locatorjs.config.json';
+const PROXY_FILENAME = 'ngx-locatorjs.proxy.json';
+
+const configPath = path.resolve(root, CONFIG_FILENAME);
+const proxyConfigPath = resolveProxyConfigPath();
 
 console.log('🚀 LocatorJs (Open-in-Editor) Configuration Setup\n');
 
 if (fs.existsSync(configPath)) {
-  console.log('⚠️  open-in-editor.config.json already exists!');
+  console.log(`⚠️  ${CONFIG_FILENAME} already exists!`);
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -45,7 +49,6 @@ async function startSetup() {
 
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-    const proxyConfigPath = path.resolve(root, 'proxy.conf.json');
     const proxyConfig = {
       '/__open-in-editor': {
         target: `http://localhost:${config.port}`,
@@ -71,6 +74,8 @@ async function startSetup() {
     console.log(`📁 Config: ${path.relative(root, configPath)}`);
     console.log(`🔗 Proxy: ${path.relative(root, proxyConfigPath)} (port: ${config.port})`);
 
+    ensureGitignoreEntries(['.open-in-editor/']);
+
     console.log('\n🔍 Running component scan...');
     const scanScript = path.resolve(__dirname, 'cmp-scan.js');
     if (fs.existsSync(scanScript)) {
@@ -83,19 +88,19 @@ async function startSetup() {
         scanProcess.on('close', (code) => {
           if (code === 0) {
             console.log('\n✅ Component scan completed!');
-            printNextSteps();
+            printNextSteps(proxyConfigPath);
           } else {
             console.log('\n⚠️  Component scan failed, but config is saved.');
-            printManualScan();
+            printManualScan(proxyConfigPath);
           }
         });
       } catch {
         console.log('\n⚠️  Could not run component scan automatically.');
-        printManualScan();
+        printManualScan(proxyConfigPath);
       }
     } else {
       console.log('\n⚠️  scan script not found.');
-      printManualScan();
+      printManualScan(proxyConfigPath);
     }
   } catch (error: any) {
     console.error('\n❌ Setup failed:', error?.message || error);
@@ -103,33 +108,112 @@ async function startSetup() {
   }
 }
 
-function printManualScan() {
+function printManualScan(proxyPath: string) {
   console.log('Please run it manually: npx locatorjs-scan');
-  printNextSteps();
+  printNextSteps(proxyPath);
 }
 
-function printNextSteps() {
+function printNextSteps(proxyPath: string) {
   console.log('\n🚀 Next steps:');
   console.log('   npx locatorjs-open-in-editor');
-  console.log('   (run your Angular dev server with --proxy-config proxy.conf.json)');
+  console.log(`   (run your Angular dev server with --proxy-config ${path.relative(root, proxyPath)})`);
 }
 
 function mergeProxyConfig(proxyConfigPath: string, addition: Record<string, any>) {
-  if (!fs.existsSync(proxyConfigPath)) return addition;
+  const existing = readProxyConfig(proxyConfigPath);
+  if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+    return {
+      ...existing,
+      ...addition,
+    };
+  }
+  if (fs.existsSync(proxyConfigPath)) {
+    console.log('⚠️  Existing proxy config is not valid JSON. Overwriting with locator config.');
+  }
+  return addition;
+}
 
+function readProxyConfig(filePath: string): Record<string, any> | null {
+  if (!fs.existsSync(filePath)) return null;
   try {
-    const existing = JSON.parse(fs.readFileSync(proxyConfigPath, 'utf8'));
+    const existing = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
-      return {
-        ...existing,
-        ...addition,
-      };
+      return existing;
     }
   } catch {
-    // fallthrough
+    // ignore parse errors
+  }
+  return null;
+}
+
+function resolveProxyConfigPath(): string {
+  const angularProxyPath = findProxyConfigFromAngularJson();
+  if (angularProxyPath) {
+    if (path.extname(angularProxyPath) !== '.json') {
+      console.log(
+        `⚠️  proxyConfig in angular.json is not a JSON file (${path.basename(
+          angularProxyPath,
+        )}). Creating ${PROXY_FILENAME} instead.`,
+      );
+      return path.resolve(root, PROXY_FILENAME);
+    }
+    return angularProxyPath;
   }
 
-  return addition;
+  const defaultProxy = path.resolve(root, 'proxy.conf.json');
+  if (fs.existsSync(defaultProxy)) return defaultProxy;
+
+  return path.resolve(root, PROXY_FILENAME);
+}
+
+function findProxyConfigFromAngularJson(): string | null {
+  const angularJsonPath = path.resolve(root, 'angular.json');
+  if (!fs.existsSync(angularJsonPath)) return null;
+
+  try {
+    const angularJson = JSON.parse(fs.readFileSync(angularJsonPath, 'utf8'));
+    const projects = angularJson?.projects ?? {};
+
+    for (const project of Object.values(projects)) {
+      const targets = (project as any)?.architect || (project as any)?.targets;
+      const serve = targets?.serve;
+      if (!serve) continue;
+
+      const direct = serve?.options?.proxyConfig;
+      if (typeof direct === 'string' && direct.trim().length > 0) {
+        return path.resolve(root, direct);
+      }
+
+      const configurations = serve?.configurations;
+      if (configurations && typeof configurations === 'object') {
+        for (const config of Object.values(configurations)) {
+          const confProxy = (config as any)?.proxyConfig;
+          if (typeof confProxy === 'string' && confProxy.trim().length > 0) {
+            return path.resolve(root, confProxy);
+          }
+        }
+      }
+    }
+  } catch {
+    // ignore parse errors
+  }
+
+  return null;
+}
+
+function ensureGitignoreEntries(entries: string[]) {
+  const gitignorePath = path.resolve(root, '.gitignore');
+  if (!fs.existsSync(gitignorePath)) return;
+
+  const content = fs.readFileSync(gitignorePath, 'utf8');
+  const lines = content.split(/\r?\n/);
+  const missing = entries.filter((entry) => !lines.includes(entry));
+  if (missing.length === 0) return;
+
+  const suffix = content.endsWith('\n') ? '' : '\n';
+  const block = `${suffix}# ngx-locatorjs\n${missing.join('\n')}\n`;
+  fs.appendFileSync(gitignorePath, block);
+  console.log(`🧹 Added to .gitignore: ${missing.join(', ')}`);
 }
 
 function promptPort(): Promise<number> {
@@ -213,7 +297,8 @@ function selectEditor(): Promise<string> {
       rl.question('\nEnter number (1-3, default: 1 for Cursor): ', (answer) => {
         rl.close();
         const choice = parseInt(answer.trim(), 10) || 1;
-        const selected = availableEditors[Math.max(0, Math.min(choice - 1, availableEditors.length - 1))];
+        const selected =
+          availableEditors[Math.max(0, Math.min(choice - 1, availableEditors.length - 1))];
         console.log(`   → Selected: ${selected.name}`);
         resolve(selected.value);
       });
@@ -296,7 +381,7 @@ function promptScanSettings() {
   console.log('\n📂 Scan settings (using defaults):');
   console.log(`   → Include: ${JSON.stringify(defaultInclude)}`);
   console.log(`   → Exclude: ${JSON.stringify(defaultExclude)}`);
-  console.log('   💡 You can modify these later in open-in-editor.config.json');
+  console.log(`   💡 You can modify these later in ${CONFIG_FILENAME}`);
 
   return Promise.resolve({
     includeGlobs: defaultInclude,

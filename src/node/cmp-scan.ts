@@ -11,8 +11,8 @@ type CmpInfo = {
 
 type MapFile = {
   generatedAt: string;
-  bySelector: Record<string, string[]>;
   detailByFilePath: Record<string, CmpInfo>;
+  filePathsByClassName: Record<string, string[]>;
 };
 
 type ScanConfig = {
@@ -46,7 +46,8 @@ const DEFAULT_EXCLUDE_GLOBS = [
 ];
 
 const root = process.cwd();
-const configPath = path.resolve(root, 'open-in-editor.config.json');
+const CONFIG_FILENAME = 'ngx-locatorjs.config.json';
+const configPath = path.resolve(root, CONFIG_FILENAME);
 
 function readConfig(): OpenInEditorConfig {
   try {
@@ -151,8 +152,8 @@ async function main() {
     process.exit(0);
   }
 
-  const bySelector: Record<string, string[]> = {};
   const detailByFilePath: Record<string, CmpInfo> = {};
+  const filePathsByClassName: Record<string, string[]> = {};
 
   for (const sf of sourceFiles) {
     const filePath = sf.getFilePath();
@@ -168,13 +169,6 @@ async function main() {
 
       const obj = arg.asKindOrThrow(SyntaxKind.ObjectLiteralExpression);
 
-      const selProp = obj.getProperty('selector');
-      const selector = selProp
-        ?.asKind(SyntaxKind.PropertyAssignment)
-        ?.getInitializer()
-        ?.getText()
-        .replace(/^`|^'|^"|"|'|`$/g, '');
-
       const templateUrlProp = obj.getProperty('templateUrl');
       const templateUrl = templateUrlProp
         ?.asKind(SyntaxKind.PropertyAssignment)
@@ -188,29 +182,33 @@ async function main() {
       const absTs = path.resolve(root, filePath);
       const absTpl = templateUrl ? path.resolve(path.dirname(absTs), templateUrl) : undefined;
 
-      if (selector) {
-        if (!bySelector[selector]) bySelector[selector] = [];
-        if (!bySelector[selector].includes(absTs)) {
-          bySelector[selector].push(absTs);
-        }
-      }
-
       detailByFilePath[absTs] = {
         className,
         filePath: absTs,
         templateUrl: absTpl,
       };
+
+      if (!filePathsByClassName[className]) filePathsByClassName[className] = [];
+      if (!filePathsByClassName[className].includes(absTs)) {
+        filePathsByClassName[className].push(absTs);
+      }
     }
   }
 
   const out: MapFile = {
     generatedAt: new Date().toISOString(),
-    bySelector,
     detailByFilePath,
+    filePathsByClassName,
   };
   fs.writeFileSync(outFile, JSON.stringify(out, null, 2));
 
   saveCache(currentStats);
+  console.log(
+    `[cmp-scan] ✅ Saved ${Object.keys(detailByFilePath).length} components to ${path.relative(
+      root,
+      outFile,
+    )}`,
+  );
 }
 
 main().catch((err) => {

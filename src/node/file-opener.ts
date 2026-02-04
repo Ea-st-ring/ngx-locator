@@ -5,10 +5,11 @@ import path from 'path';
 import childProcess from 'child_process';
 
 const root = process.cwd();
-const configPath = path.resolve(root, 'open-in-editor.config.json');
+const CONFIG_FILENAME = 'ngx-locatorjs.config.json';
+const configPath = path.resolve(root, CONFIG_FILENAME);
 
 if (!fs.existsSync(configPath)) {
-  console.log('🚀 open-in-editor.config.json not found!');
+  console.log(`🚀 ${CONFIG_FILENAME} not found!`);
   console.log('Please run: npx locatorjs-config');
   console.log('Or manually create the config file.');
   process.exit(1);
@@ -146,7 +147,9 @@ function findBestLineInFile(filePath: string, searchTerms: string[]) {
         if (lowerLine.includes(lowerTerm)) {
           scores[lineIndex] += weight * 2;
 
-          if (new RegExp(`\\b${lowerTerm.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}\\b`).test(lowerLine)) {
+          if (
+            new RegExp(`\\b${lowerTerm.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}\\b`).test(lowerLine)
+          ) {
             scores[lineIndex] += weight * 3;
           }
 
@@ -187,9 +190,7 @@ app.get('/__open-in-editor', (req, res) => {
   const ok = launchInEditor(fileWithPos);
 
   if (!ok) {
-    return res
-      .status(500)
-      .send('Failed to launch editor. Check PATH or set EDITOR_CMD.');
+    return res.status(500).send('Failed to launch editor. Check PATH or set EDITOR_CMD.');
   }
   res.end('ok');
 });
@@ -237,7 +238,9 @@ app
   })
   .on('error', (err: any) => {
     if (err.code === 'EADDRINUSE') {
-      console.log(`[file-opener] Port ${PORT} already in use - another file:opener is already running`);
+      console.log(
+        `[file-opener] Port ${PORT} already in use - another file:opener is already running`,
+      );
       process.exit(0);
     } else {
       console.error('[file-opener] Server error:', err);
