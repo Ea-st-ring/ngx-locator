@@ -2,8 +2,24 @@
   "name": "ngx-locatorjs",
   "version": "0.1.0",
   "description": "LocatorJs open-in-editor tools for Angular projects",
+  "author": "Ea-st-ring",
   "type": "module",
   "license": "MIT",
+  "keywords": [
+    "angular",
+    "locatorjs",
+    "open-in-editor",
+    "devtools",
+    "component"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ea-st-ring/ngx-locator.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Ea-st-ring/ngx-locator/issues"
+  },
+  "homepage": "https://github.com/Ea-st-ring/ngx-locator#readme",
   "main": "dist/browser/index.js",
   "types": "dist/browser/index.d.ts",
   "exports": {
