@@ -1,3 +1,3 @@
 import { installAngularLocator } from './index';
 
-installAngularLocator();
+installAngularLocator({ enableNetwork: true });

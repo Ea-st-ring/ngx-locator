@@ -17,6 +17,7 @@ export type AngularLocatorEndpoints = {
 
 export type AngularLocatorOptions = {
   endpoints?: Partial<AngularLocatorEndpoints>;
+  enableNetwork?: boolean;
   prefetchMap?: boolean;
   enableHover?: boolean;
   enableClick?: boolean;
@@ -27,6 +28,7 @@ export type AngularLocatorOptions = {
 
 type ResolvedOptions = {
   endpoints: AngularLocatorEndpoints;
+  enableNetwork: boolean;
   prefetchMap: boolean;
   enableHover: boolean;
   enableClick: boolean;
@@ -43,6 +45,7 @@ const DEFAULT_ENDPOINTS: AngularLocatorEndpoints = {
 
 const DEFAULT_OPTIONS: ResolvedOptions = {
   endpoints: DEFAULT_ENDPOINTS,
+  enableNetwork: false,
   prefetchMap: true,
   enableHover: true,
   enableClick: true,
@@ -56,6 +59,33 @@ let INSTALLED = false;
 
 let CMP_MAP: CmpMap | null = null;
 let mapLoadPromise: Promise<CmpMap | undefined> | null = null;
+
+const LOCALHOST_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
+
+function isLocalhostHost(hostname: string): boolean {
+  if (LOCALHOST_HOSTS.has(hostname)) return true;
+  if (hostname.endsWith('.localhost')) return true;
+  return false;
+}
+
+function assertNetworkAllowed(url: string): string {
+  if (!OPTIONS.enableNetwork) {
+    if (OPTIONS.debug) {
+      console.warn('[angular-locator] Network is disabled. Set enableNetwork: true.');
+    }
+    throw new Error('Network disabled');
+  }
+
+  const resolved = new URL(url, window.location.href);
+  if (!isLocalhostHost(resolved.hostname)) {
+    if (OPTIONS.debug) {
+      console.warn('[angular-locator] Network is limited to localhost:', resolved.href);
+    }
+    throw new Error('Network restricted to localhost');
+  }
+
+  return resolved.toString();
+}
 
 function normalizeMap(map: CmpMap): CmpMap {
   if (!map.filePathsByClassName || Object.keys(map.filePathsByClassName).length === 0) {
@@ -74,7 +104,7 @@ async function ensureMap(forceRefresh = false): Promise<CmpMap> {
   if (CMP_MAP && !forceRefresh) return CMP_MAP;
 
   const timestamp = Date.now();
-  const res = await fetch(`${OPTIONS.endpoints.componentMap}?t=${timestamp}`, {
+  const res = await fetch(assertNetworkAllowed(`${OPTIONS.endpoints.componentMap}?t=${timestamp}`), {
     cache: 'no-store',
     headers: {
       'Cache-Control': 'no-cache, no-store, must-revalidate',
@@ -229,7 +259,9 @@ function getNearestComponent(el: Element): any | null {
 }
 
 async function openFile(absPath: string, line = 1, col = 1) {
-  const url = `${OPTIONS.endpoints.openInEditor}?file=${encodeURIComponent(absPath)}&line=${line}&col=${col}`;
+  const url = assertNetworkAllowed(
+    `${OPTIONS.endpoints.openInEditor}?file=${encodeURIComponent(absPath)}&line=${line}&col=${col}`,
+  );
   try {
     await fetch(url);
   } catch (e) {
@@ -240,9 +272,11 @@ async function openFile(absPath: string, line = 1, col = 1) {
 }
 
 async function openFileWithSearch(absPath: string, searchTerms: string[]) {
-  const url = `${OPTIONS.endpoints.openInEditorSearch}?file=${encodeURIComponent(absPath)}&search=${encodeURIComponent(
-    JSON.stringify(searchTerms),
-  )}`;
+  const url = assertNetworkAllowed(
+    `${OPTIONS.endpoints.openInEditorSearch}?file=${encodeURIComponent(absPath)}&search=${encodeURIComponent(
+      JSON.stringify(searchTerms),
+    )}`,
+  );
   try {
     await fetch(url);
   } catch (e) {

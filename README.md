@@ -27,7 +27,8 @@ You must complete steps 1–5 for this to work.
 3. Generate config + proxy: `npx locatorjs-config`
 4. Scan components: `npx locatorjs-scan`
 5. Run the file-opener server and your dev server (keep both running): `npx locatorjs-open-in-editor` + `ng serve --proxy-config ngx-locatorjs.proxy.json`
-   - If you use `npm run start`, pass args after `--`: `npm run start -- --proxy-config ngx-locatorjs.proxy.json`
+
+If you use `npm run start`, pass args after `--`: `npm run start -- --proxy-config ngx-locatorjs.proxy.json`
 
 ## Add to `main.ts`
 
@@ -48,7 +49,9 @@ platformBrowserDynamic()
     if (!environment.production) {
       setTimeout(() => {
         import('ngx-locatorjs')
-          .then((m) => m.installAngularLocator())
+          .then((m) =>
+            m.installAngularLocator({ enableNetwork: true }), // required for network access (localhost-only)
+          )
           .catch((err) => console.warn('[angular-locator] Failed to load:', err));
       }, 1000);
     }
@@ -66,7 +69,9 @@ bootstrapApplication(AppComponent, appConfig)
   .then(() => {
     setTimeout(() => {
       import('ngx-locatorjs')
-        .then((m) => m.installAngularLocator())
+        .then((m) =>
+          m.installAngularLocator({ enableNetwork: true }), // required for network access (localhost-only)
+        )
         .catch((err) => console.warn('[angular-locator] Failed to load:', err));
     }, 1000);
   })
@@ -155,6 +160,7 @@ Example:
 ## Troubleshooting
 - **CORS / JSON parse error**: ensure dev server uses `--proxy-config ngx-locatorjs.proxy.json`
 - **npm run shows "Unknown cli config --proxy-config"**: use `npm run start -- --proxy-config ngx-locatorjs.proxy.json`
+- **Network disabled**: pass `enableNetwork: true` to `installAngularLocator`
 - **component-map.json not found**: run `npx locatorjs-scan`
 - **Map is empty or missing components**: check `scan.includeGlobs` and rerun the scan
 - **Wrong files open or nothing matches**: confirm `workspaceRoot` points to the actual Angular app root
@@ -164,6 +170,7 @@ Example:
 
 ## Notes
 - Use only in development (guard with `environment.production`).
+- Network requests are opt-in and limited to localhost. Set `enableNetwork: true` to activate.
 
 ## One-Command Dev (Recommended)
 Running the file-opener server and Angular dev server separately is tedious. You can wire them into a single script.

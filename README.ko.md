@@ -15,7 +15,8 @@
 3. 설정/프록시 생성: `npx locatorjs-config`
 4. 컴포넌트 스캔: `npx locatorjs-scan`
 5. 파일 오프너 서버 + dev 서버 실행 (둘 다 켜진 상태 유지): `npx locatorjs-open-in-editor` + `ng serve --proxy-config ngx-locatorjs.proxy.json`
-   - `npm run start` 사용 시 `--` 뒤에 전달: `npm run start -- --proxy-config ngx-locatorjs.proxy.json`
+
+`npm run start` 사용 시 `--` 뒤에 전달: `npm run start -- --proxy-config ngx-locatorjs.proxy.json`
 
 **Angular 코드 추가 (main.ts)**
 ```ts
@@ -33,7 +34,9 @@ platformBrowserDynamic()
   .then(() => {
     if (!environment.production) {
       setTimeout(() => {
-        import('ngx-locatorjs').then((m) => m.installAngularLocator());
+        import('ngx-locatorjs').then((m) =>
+          m.installAngularLocator({ enableNetwork: true }), // 네트워크 사용(로컬호스트 전용)
+        );
       }, 1000);
     }
   })
@@ -50,7 +53,9 @@ bootstrapApplication(AppComponent, appConfig)
   .then(() => {
     setTimeout(() => {
       import('ngx-locatorjs')
-        .then((m) => m.installAngularLocator())
+        .then((m) =>
+          m.installAngularLocator({ enableNetwork: true }), // 네트워크 사용(로컬호스트 전용)
+        )
         .catch((err) => console.warn('[angular-locator] Failed to load:', err));
     }, 1000);
   })
@@ -167,21 +172,24 @@ bootstrapApplication(AppComponent, appConfig)
 `ng serve --proxy-config ngx-locatorjs.proxy.json` 사용 여부 확인
 2. npm run 경고
 `npm run start -- --proxy-config ngx-locatorjs.proxy.json` 형태로 실행
-3. component-map.json not found
+3. 네트워크 비활성
+`installAngularLocator({ enableNetwork: true })` 설정 확인
+4. component-map.json not found
 `npx locatorjs-scan` 실행 후 `.open-in-editor/component-map.json` 생성 여부 확인
-4. 스캔 결과가 비어있거나 컴포넌트가 누락됨
+5. 스캔 결과가 비어있거나 컴포넌트가 누락됨
 `scan.includeGlobs` 경로 확인 후 재스캔
-5. 잘못된 파일이 열리거나 매칭이 안 됨
+6. 잘못된 파일이 열리거나 매칭이 안 됨
 `workspaceRoot`가 실제 Angular 앱 루트인지 확인
-6. 하이라이트가 안 보이거나 info가 null로 나옴
+7. 하이라이트가 안 보이거나 info가 null로 나옴
 `/__cmp-map` 응답에 내 컴포넌트 클래스명이 포함되는지 확인
-7. 에디터가 열리지 않음
+8. 에디터가 열리지 않음
 CLI 설치 확인 또는 `EDITOR_CMD` 설정
-8. 포트 충돌
+9. 포트 충돌
 `ngx-locatorjs.config.json`과 `ngx-locatorjs.proxy.json`에서 포트 일치 여부 확인
 
 **주의**
 - 개발 모드에서만 사용하세요. 프로덕션 번들에 포함되지 않도록 `environment.production` 체크를 권장합니다.
+- 네트워크 요청은 opt-in이며 localhost로만 제한됩니다. `enableNetwork: true`로 활성화하세요.
 
 **원 커맨드 실행 (추천)**
 file-opener 서버와 Angular dev server를 한 번에 띄우려면 아래 방식 중 하나를 사용하세요.

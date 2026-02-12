@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import childProcess from 'child_process';
+import http from 'http';
 
 const root = process.cwd();
 const CONFIG_FILENAME = 'ngx-locatorjs.config.json';
@@ -123,14 +123,6 @@ function launchInEditor(fileWithPos: string, preferred = DEFAULT_EDITOR) {
   return false;
 }
 
-const app = express();
-
-app.get('/__cmp-map', (req, res) => {
-  if (!fs.existsSync(MAP_PATH)) return res.status(404).send('component-map.json not found');
-  res.setHeader('Content-Type', 'application/json');
-  fs.createReadStream(MAP_PATH).pipe(res);
-});
-
 function findBestLineInFile(filePath: string, searchTerms: string[]) {
   try {
     const content = fs.readFileSync(filePath, 'utf8');
@@ -147,9 +139,7 @@ function findBestLineInFile(filePath: string, searchTerms: string[]) {
         if (lowerLine.includes(lowerTerm)) {
           scores[lineIndex] += weight * 2;
 
-          if (
-            new RegExp(`\\b${lowerTerm.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}\\b`).test(lowerLine)
-          ) {
+          if (new RegExp(`\\b${lowerTerm.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}\\b`).test(lowerLine)) {
             scores[lineIndex] += weight * 3;
           }
 
@@ -176,53 +166,103 @@ function findBestLineInFile(filePath: string, searchTerms: string[]) {
   }
 }
 
-app.get('/__open-in-editor', (req, res) => {
-  let file = req.query.file as string | undefined;
-  const line = (req.query.line as string) || '1';
-  const col = (req.query.col as string) || '1';
-
-  if (!file) return res.status(400).send('file is required');
-  file = decodeURIComponent(file);
-
-  console.log(`[file-opener] Opening file: ${file}:${line}:${col}`);
-
-  const fileWithPos = `${file}:${line}:${col}`;
-  const ok = launchInEditor(fileWithPos);
-
-  if (!ok) {
-    return res.status(500).send('Failed to launch editor. Check PATH or set EDITOR_CMD.');
+const server = http.createServer((req, res) => {
+  if (!req.url) {
+    res.statusCode = 400;
+    res.end('Bad request');
+    return;
   }
-  res.end('ok');
-});
 
-app.get('/__open-in-editor-search', (req, res) => {
-  let file = req.query.file as string | undefined;
-  const searchParam = req.query.search as string | undefined;
+  if (req.method !== 'GET') {
+    res.statusCode = 405;
+    res.end('Method not allowed');
+    return;
+  }
 
-  if (!file) return res.status(400).send('file is required');
-  if (!searchParam) return res.status(400).send('search terms required');
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const pathname = url.pathname;
 
-  file = decodeURIComponent(file);
+  if (pathname === '/__cmp-map') {
+    if (!fs.existsSync(MAP_PATH)) {
+      res.statusCode = 404;
+      res.end('component-map.json not found');
+      return;
+    }
+    res.setHeader('Content-Type', 'application/json');
+    fs.createReadStream(MAP_PATH).pipe(res);
+    return;
+  }
 
-  try {
-    const searchTerms = JSON.parse(decodeURIComponent(searchParam));
-    const bestLine = findBestLineInFile(file, searchTerms);
+  if (pathname === '/__open-in-editor') {
+    const file = url.searchParams.get('file');
+    const line = url.searchParams.get('line') || '1';
+    const col = url.searchParams.get('col') || '1';
 
-    const fileWithPos = `${file}:${bestLine}:1`;
+    if (!file) {
+      res.statusCode = 400;
+      res.end('file is required');
+      return;
+    }
+
+    const decoded = decodeURIComponent(file);
+    console.log(`[file-opener] Opening file: ${decoded}:${line}:${col}`);
+
+    const fileWithPos = `${decoded}:${line}:${col}`;
     const ok = launchInEditor(fileWithPos);
 
     if (!ok) {
-      return res.status(500).send('Failed to launch editor');
+      res.statusCode = 500;
+      res.end('Failed to launch editor. Check PATH or set EDITOR_CMD.');
+      return;
+    }
+    res.end('ok');
+    return;
+  }
+
+  if (pathname === '/__open-in-editor-search') {
+    const file = url.searchParams.get('file');
+    const searchParam = url.searchParams.get('search');
+
+    if (!file) {
+      res.statusCode = 400;
+      res.end('file is required');
+      return;
+    }
+    if (!searchParam) {
+      res.statusCode = 400;
+      res.end('search terms required');
+      return;
     }
 
-    res.end(`Opened at line ${bestLine}`);
-  } catch (e: any) {
-    console.warn(`[file-opener] Search error: ${e.message}`);
-    res.status(500).send('Search failed: ' + e.message);
+    const decoded = decodeURIComponent(file);
+
+    try {
+      const searchTerms = JSON.parse(decodeURIComponent(searchParam));
+      const bestLine = findBestLineInFile(decoded, searchTerms);
+
+      const fileWithPos = `${decoded}:${bestLine}:1`;
+      const ok = launchInEditor(fileWithPos);
+
+      if (!ok) {
+        res.statusCode = 500;
+        res.end('Failed to launch editor');
+        return;
+      }
+
+      res.end(`Opened at line ${bestLine}`);
+    } catch (e: any) {
+      console.warn(`[file-opener] Search error: ${e.message}`);
+      res.statusCode = 500;
+      res.end('Search failed: ' + e.message);
+    }
+    return;
   }
+
+  res.statusCode = 404;
+  res.end('Not found');
 });
 
-app
+server
   .listen(PORT, () => {
     console.log(`[file-opener] http://localhost:${PORT}`);
     console.log(` - map: ${path.relative(root, MAP_PATH)}`);
