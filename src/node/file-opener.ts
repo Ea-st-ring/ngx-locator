@@ -1,8 +1,13 @@
 #!/usr/bin/env node
-import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import childProcess from 'child_process';
+import http from 'http';
+import { spawn } from 'child_process';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const root = process.cwd();
 const CONFIG_FILENAME = 'ngx-locatorjs.config.json';
@@ -15,13 +20,37 @@ if (!fs.existsSync(configPath)) {
   process.exit(1);
 }
 
-const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
+type ScanConfig = {
+  includeGlobs?: string[];
+  excludeGlobs?: string[];
+};
+
+type OpenInEditorConfig = {
   port?: number;
   editor?: string;
   fallbackEditor?: string;
+  workspaceRoot?: string;
+  scan?: ScanConfig;
 };
 
-const PORT = Number(process.env.OPEN_IN_EDITOR_PORT || cfg.port || 4123);
+const DEFAULT_INCLUDE_GLOBS = [
+  'src/**/*.{ts,tsx}',
+  'projects/**/*.{ts,tsx}',
+  'apps/**/*.{ts,tsx}',
+  'libs/**/*.{ts,tsx}',
+];
+
+const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8')) as OpenInEditorConfig;
+
+const WATCH_ENABLED = process.argv.includes('--watch') || process.argv.includes('-w');
+
+const cfgScan = cfg.scan ?? {};
+const scanIncludeGlobs = cfgScan.includeGlobs ?? DEFAULT_INCLUDE_GLOBS;
+const scanWorkspaceRoot = cfg.workspaceRoot?.trim() || '.';
+
+const cfgPort = cfg.port;
+
+const PORT = Number(process.env.OPEN_IN_EDITOR_PORT || cfgPort || 4123);
 const MAP_PATH = path.resolve(root, '.open-in-editor/component-map.json');
 
 const editorCLICache: Record<string, boolean> = {};
@@ -123,14 +152,6 @@ function launchInEditor(fileWithPos: string, preferred = DEFAULT_EDITOR) {
   return false;
 }
 
-const app = express();
-
-app.get('/__cmp-map', (req, res) => {
-  if (!fs.existsSync(MAP_PATH)) return res.status(404).send('component-map.json not found');
-  res.setHeader('Content-Type', 'application/json');
-  fs.createReadStream(MAP_PATH).pipe(res);
-});
-
 function findBestLineInFile(filePath: string, searchTerms: string[]) {
   try {
     const content = fs.readFileSync(filePath, 'utf8');
@@ -176,53 +197,206 @@ function findBestLineInFile(filePath: string, searchTerms: string[]) {
   }
 }
 
-app.get('/__open-in-editor', (req, res) => {
-  let file = req.query.file as string | undefined;
-  const line = (req.query.line as string) || '1';
-  const col = (req.query.col as string) || '1';
-
-  if (!file) return res.status(400).send('file is required');
-  file = decodeURIComponent(file);
-
-  console.log(`[file-opener] Opening file: ${file}:${line}:${col}`);
-
-  const fileWithPos = `${file}:${line}:${col}`;
-  const ok = launchInEditor(fileWithPos);
-
-  if (!ok) {
-    return res.status(500).send('Failed to launch editor. Check PATH or set EDITOR_CMD.');
+function startScanWatch() {
+  const scanScript = path.resolve(__dirname, 'cmp-scan.js');
+  if (!fs.existsSync(scanScript)) {
+    console.log('[file-opener] scan script not found, watch disabled.');
+    return;
   }
-  res.end('ok');
-});
 
-app.get('/__open-in-editor-search', (req, res) => {
-  let file = req.query.file as string | undefined;
-  const searchParam = req.query.search as string | undefined;
+  const roots = getWatchRoots(scanIncludeGlobs, scanWorkspaceRoot);
+  if (roots.length === 0) {
+    console.log('[file-opener] watch roots not found, watch disabled.');
+    return;
+  }
 
-  if (!file) return res.status(400).send('file is required');
-  if (!searchParam) return res.status(400).send('search terms required');
+  const recursive = process.platform === 'darwin' || process.platform === 'win32';
+  const watchers: fs.FSWatcher[] = [];
+  let scanRunning = false;
+  let scanQueued = false;
+  let timer: NodeJS.Timeout | null = null;
 
-  file = decodeURIComponent(file);
+  const runScan = (reason: string) => {
+    if (scanRunning) {
+      scanQueued = true;
+      return;
+    }
+    scanRunning = true;
+    const label = reason ? ` (${reason})` : '';
+    console.log(`[file-opener] scan started${label}`);
+
+    const scanProcess = spawn(process.execPath, [scanScript], {
+      stdio: 'inherit',
+      cwd: root,
+    });
+
+    scanProcess.on('close', (code) => {
+      scanRunning = false;
+      if (code === 0) {
+        console.log('[file-opener] scan completed');
+      } else {
+        console.log('[file-opener] scan failed');
+      }
+      if (scanQueued) {
+        scanQueued = false;
+        scheduleScan('queued');
+      }
+    });
+  };
+
+  const scheduleScan = (reason: string) => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => runScan(reason), 500);
+  };
+
+  const attachWatcher = (watchPath: string) => {
+    try {
+      const watcher = fs.watch(watchPath, { recursive }, (eventType, filename) => {
+        const detail = filename ? `${eventType}:${filename.toString()}` : eventType;
+        scheduleScan(detail);
+      });
+      watchers.push(watcher);
+    } catch (err: any) {
+      console.log(`[file-opener] failed to watch ${watchPath}: ${err?.message || err}`);
+      throw err;
+    }
+  };
 
   try {
-    const searchTerms = JSON.parse(decodeURIComponent(searchParam));
-    const bestLine = findBestLineInFile(file, searchTerms);
+    roots.forEach(attachWatcher);
+    console.log(
+      `[file-opener] watch enabled (${recursive ? 'recursive' : 'non-recursive'}): ${roots.join(
+        ', ',
+      )}`,
+    );
+  } catch {
+    watchers.forEach((w) => w.close());
+    console.log('[file-opener] falling back to polling scan every 5s');
+    setInterval(() => runScan('poll'), 5000);
+  }
 
-    const fileWithPos = `${file}:${bestLine}:1`;
+  runScan('initial');
+}
+
+function getWatchRoots(includeGlobs: string[], workspaceRoot: string): string[] {
+  const roots = new Set<string>();
+
+  includeGlobs.forEach((glob) => {
+    const base = globToBaseDir(glob);
+    const resolved = path.resolve(root, workspaceRoot, base);
+    if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+      roots.add(resolved);
+    }
+  });
+
+  return Array.from(roots);
+}
+
+function globToBaseDir(glob: string): string {
+  const wildcardIndex = glob.search(/[*?[\]{]/);
+  if (wildcardIndex === -1) return glob;
+  const prefix = glob.slice(0, wildcardIndex);
+  if (prefix.endsWith('/')) return prefix.slice(0, -1);
+  return path.dirname(prefix);
+}
+
+const server = http.createServer((req, res) => {
+  if (!req.url) {
+    res.statusCode = 400;
+    res.end('Bad request');
+    return;
+  }
+
+  if (req.method !== 'GET') {
+    res.statusCode = 405;
+    res.end('Method not allowed');
+    return;
+  }
+
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const pathname = url.pathname;
+
+  if (pathname === '/__cmp-map') {
+    if (!fs.existsSync(MAP_PATH)) {
+      res.statusCode = 404;
+      res.end('component-map.json not found');
+      return;
+    }
+    res.setHeader('Content-Type', 'application/json');
+    fs.createReadStream(MAP_PATH).pipe(res);
+    return;
+  }
+
+  if (pathname === '/__open-in-editor') {
+    const file = url.searchParams.get('file');
+    const line = url.searchParams.get('line') || '1';
+    const col = url.searchParams.get('col') || '1';
+
+    if (!file) {
+      res.statusCode = 400;
+      res.end('file is required');
+      return;
+    }
+
+    const decoded = decodeURIComponent(file);
+    console.log(`[file-opener] Opening file: ${decoded}:${line}:${col}`);
+
+    const fileWithPos = `${decoded}:${line}:${col}`;
     const ok = launchInEditor(fileWithPos);
 
     if (!ok) {
-      return res.status(500).send('Failed to launch editor');
+      res.statusCode = 500;
+      res.end('Failed to launch editor. Check PATH or set EDITOR_CMD.');
+      return;
+    }
+    res.end('ok');
+    return;
+  }
+
+  if (pathname === '/__open-in-editor-search') {
+    const file = url.searchParams.get('file');
+    const searchParam = url.searchParams.get('search');
+
+    if (!file) {
+      res.statusCode = 400;
+      res.end('file is required');
+      return;
+    }
+    if (!searchParam) {
+      res.statusCode = 400;
+      res.end('search terms required');
+      return;
     }
 
-    res.end(`Opened at line ${bestLine}`);
-  } catch (e: any) {
-    console.warn(`[file-opener] Search error: ${e.message}`);
-    res.status(500).send('Search failed: ' + e.message);
+    const decoded = decodeURIComponent(file);
+
+    try {
+      const searchTerms = JSON.parse(decodeURIComponent(searchParam));
+      const bestLine = findBestLineInFile(decoded, searchTerms);
+
+      const fileWithPos = `${decoded}:${bestLine}:1`;
+      const ok = launchInEditor(fileWithPos);
+
+      if (!ok) {
+        res.statusCode = 500;
+        res.end('Failed to launch editor');
+        return;
+      }
+
+      res.end(`Opened at line ${bestLine}`);
+    } catch (e: any) {
+      console.warn(`[file-opener] Search error: ${e.message}`);
+      res.statusCode = 500;
+      res.end('Search failed: ' + e.message);
+    }
+    return;
   }
+
+  res.statusCode = 404;
+  res.end('Not found');
 });
 
-app
+server
   .listen(PORT, () => {
     console.log(`[file-opener] http://localhost:${PORT}`);
     console.log(` - map: ${path.relative(root, MAP_PATH)}`);
@@ -234,6 +408,10 @@ app
         const precision = editor.hasCliPrecision ? ' (precise line navigation)' : ' (app only)';
         console.log(`   • ${editor.name}${precision}`);
       });
+    }
+
+    if (WATCH_ENABLED) {
+      startScanWatch();
     }
   })
   .on('error', (err: any) => {

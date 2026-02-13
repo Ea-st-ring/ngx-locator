@@ -39,9 +39,10 @@ if (fs.existsSync(configPath)) {
 
 async function startSetup() {
   try {
+    logDefaults();
     const config = {
-      port: await promptPort(),
-      workspaceRoot: await promptWorkspaceRoot(),
+      port: 4123,
+      workspaceRoot: '.',
       editor: await selectEditor(),
       fallbackEditor: 'code',
       scan: await promptScanSettings(),
@@ -216,63 +217,10 @@ function ensureGitignoreEntries(entries: string[]) {
   console.log(`🧹 Added to .gitignore: ${missing.join(', ')}`);
 }
 
-function promptPort(): Promise<number> {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  return new Promise((resolve) => {
-    rl.question('🔌 Enter port number (press Enter for default: 4123): ', (answer) => {
-      rl.close();
-      const port = answer.trim();
-      const portNum = port === '' ? 4123 : parseInt(port, 10) || 4123;
-      console.log(`   → Port: ${portNum}`);
-      resolve(portNum);
-    });
-  });
-}
-
-function promptWorkspaceRoot(): Promise<string> {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  console.log(`\n📁 Current directory: ${process.cwd()}`);
-
-  const askWorkspaceRoot = (): Promise<string> => {
-    return new Promise((resolve) => {
-      rl.question('📁 Enter workspace root (press Enter for current directory "."): ', (answer) => {
-        const workspaceRoot = answer.trim();
-        const result = workspaceRoot === '' ? '.' : workspaceRoot;
-
-        const resolvedPath = path.resolve(process.cwd(), result);
-
-        if (!fs.existsSync(resolvedPath)) {
-          console.log(`   ❌ Path does not exist: ${resolvedPath}`);
-          console.log('   Please try again...\n');
-          askWorkspaceRoot().then(resolve);
-          return;
-        }
-
-        const stat = fs.statSync(resolvedPath);
-        if (!stat.isDirectory()) {
-          console.log(`   ❌ Path is not a directory: ${resolvedPath}`);
-          console.log('   Please try again...\n');
-          askWorkspaceRoot().then(resolve);
-          return;
-        }
-
-        console.log(`   → Workspace root: ${result}`);
-        console.log(`   → Resolved path: ${resolvedPath}`);
-        rl.close();
-        resolve(result);
-      });
-    });
-  };
-
-  return askWorkspaceRoot();
+function logDefaults() {
+  console.log('⚙️  Defaults applied:');
+  console.log('   → Port: 4123');
+  console.log('   → Workspace root: .');
 }
 
 function selectEditor(): Promise<string> {

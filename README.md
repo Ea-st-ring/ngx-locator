@@ -6,6 +6,7 @@ Open Angular component files directly from the browser with **Alt + Click** duri
 - Browser runtime for Alt+click / hover UI
 - CLI tools to scan Angular components and open files in your editor
 - Config + proxy setup guidance
+
 Inspired by [locatorjs.com](https://www.locatorjs.com/).
 
 ## Features
@@ -20,14 +21,14 @@ npm i -D ngx-locatorjs
 ```
 
 ## Required Steps (Do This First)
-You must complete steps 1–5 for this to work.
+You must complete steps 1–4 for this to work.
 
 1. Install the package: `npm i -D ngx-locatorjs`
-2. Add the runtime hook to `main.ts` (see the examples below)
-3. Generate config + proxy: `npx locatorjs-config`
-4. Scan components: `npx locatorjs-scan`
-5. Run the file-opener server and your dev server (keep both running): `npx locatorjs-open-in-editor` + `ng serve --proxy-config ngx-locatorjs.proxy.json`
-   - If you use `npm run start`, pass args after `--`: `npm run start -- --proxy-config ngx-locatorjs.proxy.json`
+2. Generate config + proxy: `npx locatorjs-config`
+3. Add the runtime hook to `main.ts` (see the examples below)
+4. Run the file-opener server and your dev server (keep both running): `npx locatorjs-open-in-editor --watch` + `ng serve --proxy-config ngx-locatorjs.proxy.json`
+
+If you use `npm run start`, pass args after `--`: `npm run start -- --proxy-config ngx-locatorjs.proxy.json`
 
 ## Add to `main.ts`
 
@@ -48,7 +49,9 @@ platformBrowserDynamic()
     if (!environment.production) {
       setTimeout(() => {
         import('ngx-locatorjs')
-          .then((m) => m.installAngularLocator())
+          .then((m) =>
+            m.installAngularLocator({ enableNetwork: true }), // required for network access (localhost-only)
+          )
           .catch((err) => console.warn('[angular-locator] Failed to load:', err));
       }, 1000);
     }
@@ -66,7 +69,9 @@ bootstrapApplication(AppComponent, appConfig)
   .then(() => {
     setTimeout(() => {
       import('ngx-locatorjs')
-        .then((m) => m.installAngularLocator())
+        .then((m) =>
+          m.installAngularLocator({ enableNetwork: true }), // required for network access (localhost-only)
+        )
         .catch((err) => console.warn('[angular-locator] Failed to load:', err));
     }, 1000);
   })
@@ -78,24 +83,30 @@ Location: project root
 
 **Important**
 - `npx locatorjs-config` uses the **current directory** as the base.
-- Run it from the project root and press **Enter** for `workspaceRoot: "."`.
-- In a monorepo, enter the **relative path** to your Angular app (e.g. `apps/web`).
+- Defaults: `port: 4123`, `workspaceRoot: "."`.
+- In a monorepo, update `workspaceRoot` to the **relative path** of your Angular app (e.g. `apps/web`).
 - If `.gitignore` exists, `npx locatorjs-config` will append `.open-in-editor/`. Remove it if you want to commit the map.
 
 Example:
 ```json
 {
-  "port": 4123,
-  "workspaceRoot": ".",
-  "editor": "cursor",
-  "fallbackEditor": "code",
+  "port": 4123, // Port for the local file-opener server
+  "workspaceRoot": ".", // Angular workspace root
+  "editor": "cursor", // Editor to open files (`cursor`, `code`, `webstorm`)
+  "fallbackEditor": "code", // Fallback editor if the default fails
   "scan": {
+    /**
+     * Globs to include when scanning components
+     */
     "includeGlobs": [
       "src/**/*.{ts,tsx}",
       "projects/**/*.{ts,tsx}",
       "apps/**/*.{ts,tsx}",
       "libs/**/*.{ts,tsx}"
     ],
+    /**
+     * Globs to exclude from scanning
+     */
     "excludeGlobs": [
       "**/node_modules/**",
       "**/dist/**",
@@ -109,15 +120,7 @@ Example:
 }
 ```
 
-### Field Reference
-- `port`: file-opener server port
-- `workspaceRoot`: actual Angular workspace root
-- `editor`: default editor (`cursor`, `code`, `webstorm`)
-- `fallbackEditor`: used if default fails
-- `scan.includeGlobs`: component scan targets
-- `scan.excludeGlobs`: scan excludes
-
-### Recommended includeGlobs
+### Example includeGlobs
 - Simple app: `"src/app/**/*.ts"`
 - Angular workspace: `"projects/**/*.{ts,tsx}"`
 - Nx: `"apps/**/*.{ts,tsx}", "libs/**/*.{ts,tsx}"`
@@ -155,15 +158,17 @@ Example:
 ## Troubleshooting
 - **CORS / JSON parse error**: ensure dev server uses `--proxy-config ngx-locatorjs.proxy.json`
 - **npm run shows "Unknown cli config --proxy-config"**: use `npm run start -- --proxy-config ngx-locatorjs.proxy.json`
+- **Network disabled**: pass `enableNetwork: true` to `installAngularLocator`
 - **component-map.json not found**: run `npx locatorjs-scan`
+- **Component changes not reflected**: run `npx locatorjs-open-in-editor --watch` or re-run `npx locatorjs-scan`
 - **Map is empty or missing components**: check `scan.includeGlobs` and rerun the scan
 - **Wrong files open or nothing matches**: confirm `workspaceRoot` points to the actual Angular app root
-- **No highlight / info is null**: make sure `/__cmp-map` is loading and includes your component class name
-- **Editor not opening**: install editor CLI or set `EDITOR_CMD`
+- **No highlight / info is null**: make sure `http://localhost:${port}/__cmp-map` is loading and includes your component class name
 - **Port conflict**: change port in both `ngx-locatorjs.config.json` and `ngx-locatorjs.proxy.json`
 
 ## Notes
 - Use only in development (guard with `environment.production`).
+- Network requests are opt-in and limited to localhost. Set `enableNetwork: true` to activate.
 
 ## One-Command Dev (Recommended)
 Running the file-opener server and Angular dev server separately is tedious. You can wire them into a single script.
@@ -202,7 +207,4 @@ npm i -D npm-run-all
 - Works with single apps, Angular workspace, and Nx layouts
 
 ## Limitations
-- Requires proxy setup (`ngx-locatorjs.proxy.json`), otherwise requests will fail
-- Requires the file-opener server to be running
-- Line matching in dynamic/repeated templates is heuristic, not perfect
 - Not supported in SSR/SSG runtime (browser DOM only)
