@@ -81,7 +81,6 @@ bootstrapApplication(AppComponent, appConfig)
 - 단일 Angular 앱, workspace, Nx 구조에서 동작
 
 **불가능/제한 사항**
-- 동적/반복 템플릿의 정확한 라인 매칭은 100% 보장 불가
 - SSR/SSG 환경에서는 동작하지 않음 (브라우저 DOM 기반)
 
 **ngx-locatorjs.config.json 가이드**
@@ -96,17 +95,23 @@ bootstrapApplication(AppComponent, appConfig)
 예시:
 ```json
 {
-  "port": 4123,
-  "workspaceRoot": ".",
-  "editor": "cursor",
-  "fallbackEditor": "code",
+  "port": 4123, // 프록시 서버가 실행될 포트 주소
+  "workspaceRoot": ".", // Angular 워크스페이스 루트
+  "editor": "cursor", // 파일을 열 때 사용할 에디터 (`cursor`, `code`, `webstorm`)
+  "fallbackEditor": "code", // 기본 에디터 실패 시 사용할 에디터
   "scan": {
+    /**
+     * 탐색할 컴포넌트의 경로 목록
+     */
     "includeGlobs": [
       "src/**/*.{ts,tsx}",
       "projects/**/*.{ts,tsx}",
       "apps/**/*.{ts,tsx}",
       "libs/**/*.{ts,tsx}"
     ],
+    /**
+     * 스캔에서 제외할 경로 목록
+     */
     "excludeGlobs": [
       "**/node_modules/**",
       "**/dist/**",
@@ -119,14 +124,6 @@ bootstrapApplication(AppComponent, appConfig)
   }
 }
 ```
-
-**필드 설명**
-- `port`: file-opener 서버 포트
-- `workspaceRoot`: 실제 Angular 워크스페이스 루트(모노레포에서 하위 폴더일 때 사용)
-- `editor`: 기본 에디터 (`cursor`, `code`, `webstorm`)
-- `fallbackEditor`: 기본 에디터 실패 시 사용할 에디터
-- `scan.includeGlobs`: 컴포넌트 탐색 대상 경로
-- `scan.excludeGlobs`: 스캔 제외 경로
 
 **프로젝트 구조별 includeGlobs 예시**
 1. 일반 Angular 앱

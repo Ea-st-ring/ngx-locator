@@ -90,17 +90,23 @@ Location: project root
 Example:
 ```json
 {
-  "port": 4123,
-  "workspaceRoot": ".",
-  "editor": "cursor",
-  "fallbackEditor": "code",
+  "port": 4123, // Port for the local file-opener server
+  "workspaceRoot": ".", // Angular workspace root
+  "editor": "cursor", // Editor to open files (`cursor`, `code`, `webstorm`)
+  "fallbackEditor": "code", // Fallback editor if the default fails
   "scan": {
+    /**
+     * Globs to include when scanning components
+     */
     "includeGlobs": [
       "src/**/*.{ts,tsx}",
       "projects/**/*.{ts,tsx}",
       "apps/**/*.{ts,tsx}",
       "libs/**/*.{ts,tsx}"
     ],
+    /**
+     * Globs to exclude from scanning
+     */
     "excludeGlobs": [
       "**/node_modules/**",
       "**/dist/**",
@@ -113,14 +119,6 @@ Example:
   }
 }
 ```
-
-### Field Reference
-- `port`: file-opener server port
-- `workspaceRoot`: actual Angular workspace root
-- `editor`: default editor (`cursor`, `code`, `webstorm`)
-- `fallbackEditor`: used if default fails
-- `scan.includeGlobs`: component scan targets
-- `scan.excludeGlobs`: scan excludes
 
 ### Example includeGlobs
 - Simple app: `"src/app/**/*.ts"`
@@ -209,7 +207,4 @@ npm i -D npm-run-all
 - Works with single apps, Angular workspace, and Nx layouts
 
 ## Limitations
-- Requires proxy setup (`ngx-locatorjs.proxy.json`), otherwise requests will fail
-- Requires the file-opener server to be running
-- Line matching in dynamic/repeated templates is heuristic, not perfect
 - Not supported in SSR/SSG runtime (browser DOM only)
