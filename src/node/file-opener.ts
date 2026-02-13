@@ -33,6 +33,10 @@ type OpenInEditorConfig = {
   scan?: ScanConfig;
 };
 
+function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
+  return typeof error === 'object' && error !== null && 'code' in error;
+}
+
 const DEFAULT_INCLUDE_GLOBS = [
   'src/**/*.{ts,tsx}',
   'projects/**/*.{ts,tsx}',
@@ -128,8 +132,9 @@ function launchInEditor(fileWithPos: string, preferred = DEFAULT_EDITOR) {
     try {
       childProcess.spawn(cmd, [...rest, fileWithPos], { stdio: 'ignore', detached: true }).unref();
       return true;
-    } catch (e: any) {
-      console.log(`[file-opener] EDITOR_CMD failed: ${e.message}`);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.log(`[file-opener] EDITOR_CMD failed: ${message}`);
     }
   }
 
@@ -140,8 +145,9 @@ function launchInEditor(fileWithPos: string, preferred = DEFAULT_EDITOR) {
     try {
       childProcess.spawn(cmd, args, { stdio: 'ignore', detached: true }).unref();
       return true;
-    } catch (e: any) {
-      console.log(`[file-opener] ${editor} failed: ${e.message}`);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.log(`[file-opener] ${editor} failed: ${message}`);
       return false;
     }
   };
@@ -191,8 +197,9 @@ function findBestLineInFile(filePath: string, searchTerms: string[]) {
     });
 
     return bestScore > 0 ? bestLine : 1;
-  } catch (e: any) {
-    console.warn(`[file-opener] Failed to search in file: ${e.message}`);
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.warn(`[file-opener] Failed to search in file: ${message}`);
     return 1;
   }
 }
@@ -256,8 +263,9 @@ function startScanWatch() {
         scheduleScan(detail);
       });
       watchers.push(watcher);
-    } catch (err: any) {
-      console.log(`[file-opener] failed to watch ${watchPath}: ${err?.message || err}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.log(`[file-opener] failed to watch ${watchPath}: ${message}`);
       throw err;
     }
   };
@@ -384,10 +392,11 @@ const server = http.createServer((req, res) => {
       }
 
       res.end(`Opened at line ${bestLine}`);
-    } catch (e: any) {
-      console.warn(`[file-opener] Search error: ${e.message}`);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.warn(`[file-opener] Search error: ${message}`);
       res.statusCode = 500;
-      res.end('Search failed: ' + e.message);
+      res.end('Search failed: ' + message);
     }
     return;
   }
@@ -414,8 +423,8 @@ server
       startScanWatch();
     }
   })
-  .on('error', (err: any) => {
-    if (err.code === 'EADDRINUSE') {
+  .on('error', (err: unknown) => {
+    if (isErrnoException(err) && err.code === 'EADDRINUSE') {
       console.log(
         `[file-opener] Port ${PORT} already in use - another file:opener is already running`,
       );

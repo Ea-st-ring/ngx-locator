@@ -9,6 +9,22 @@ type CmpMap = {
   filePathsByClassName: Record<string, string[]>;
 };
 
+type AngularGlobal = {
+  getOwningComponent?: (el: Element) => unknown;
+  getComponent?: (el: Element) => unknown;
+};
+
+type RuntimeComponent = {
+  constructor?: {
+    name?: string;
+  };
+};
+
+type LocatorComponent = RuntimeComponent & {
+  __isMockComponent?: boolean;
+  __cmpInfo?: CmpInfo;
+};
+
 export type AngularLocatorEndpoints = {
   openInEditor: string;
   openInEditorSearch: string;
@@ -104,14 +120,17 @@ async function ensureMap(forceRefresh = false): Promise<CmpMap> {
   if (CMP_MAP && !forceRefresh) return CMP_MAP;
 
   const timestamp = Date.now();
-  const res = await fetch(assertNetworkAllowed(`${OPTIONS.endpoints.componentMap}?t=${timestamp}`), {
-    cache: 'no-store',
-    headers: {
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-      Pragma: 'no-cache',
-      Expires: '0',
+  const res = await fetch(
+    assertNetworkAllowed(`${OPTIONS.endpoints.componentMap}?t=${timestamp}`),
+    {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
+        Expires: '0',
+      },
     },
-  });
+  );
 
   const text = await res.text();
 
@@ -220,8 +239,8 @@ function getClassNameCandidates(className: string): string[] {
   return candidates;
 }
 
-function getAngularRuntimeComponent(el: Element): any | null {
-  const ng = (window as any).ng;
+function getAngularRuntimeComponent(el: Element): RuntimeComponent | null {
+  const ng = (window as Window & { ng?: AngularGlobal }).ng;
   if (!ng) return null;
 
   const getComponentFn = ng.getOwningComponent || ng.getComponent;
@@ -230,7 +249,7 @@ function getAngularRuntimeComponent(el: Element): any | null {
   let cur: Element | null = el;
   while (cur) {
     try {
-      const cmp = getComponentFn(cur);
+      const cmp = getComponentFn(cur) as RuntimeComponent | null | undefined;
       if (cmp) return cmp;
     } catch {
       // ignore
@@ -241,7 +260,7 @@ function getAngularRuntimeComponent(el: Element): any | null {
   return null;
 }
 
-function getNearestComponent(el: Element): any | null {
+function getNearestComponent(el: Element): LocatorComponent | null {
   if (!CMP_MAP) return null;
 
   const runtimeComponent = getAngularRuntimeComponent(el);

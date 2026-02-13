@@ -12,6 +12,37 @@ const root = process.cwd();
 const CONFIG_FILENAME = 'ngx-locatorjs.config.json';
 const PROXY_FILENAME = 'ngx-locatorjs.proxy.json';
 
+type ProxyConfigEntry = {
+  target: string;
+  secure?: boolean;
+  changeOrigin?: boolean;
+  [key: string]: unknown;
+};
+
+type ProxyConfig = Record<string, ProxyConfigEntry>;
+
+type AngularServeConfig = {
+  proxyConfig?: string;
+};
+
+type AngularServeTarget = {
+  options?: AngularServeConfig;
+  configurations?: Record<string, AngularServeConfig>;
+};
+
+type AngularProject = {
+  architect?: {
+    serve?: AngularServeTarget;
+  };
+  targets?: {
+    serve?: AngularServeTarget;
+  };
+};
+
+type AngularJson = {
+  projects?: Record<string, AngularProject>;
+};
+
 const configPath = path.resolve(root, CONFIG_FILENAME);
 const proxyConfigPath = resolveProxyConfigPath();
 
@@ -50,7 +81,7 @@ async function startSetup() {
 
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-    const proxyConfig = {
+    const proxyConfig: ProxyConfig = {
       '/__open-in-editor': {
         target: `http://localhost:${config.port}`,
         secure: false,
@@ -66,7 +97,7 @@ async function startSetup() {
         secure: false,
         changeOrigin: true,
       },
-    } as Record<string, any>;
+    };
 
     const mergedProxyConfig = mergeProxyConfig(proxyConfigPath, proxyConfig);
     fs.writeFileSync(proxyConfigPath, JSON.stringify(mergedProxyConfig, null, 2));
@@ -103,8 +134,9 @@ async function startSetup() {
       console.log('\n⚠️  scan script not found.');
       printManualScan(proxyConfigPath);
     }
-  } catch (error: any) {
-    console.error('\n❌ Setup failed:', error?.message || error);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('\n❌ Setup failed:', message);
     process.exit(1);
   }
 }
@@ -117,10 +149,12 @@ function printManualScan(proxyPath: string) {
 function printNextSteps(proxyPath: string) {
   console.log('\n🚀 Next steps:');
   console.log('   npx locatorjs-open-in-editor');
-  console.log(`   (run your Angular dev server with --proxy-config ${path.relative(root, proxyPath)})`);
+  console.log(
+    `   (run your Angular dev server with --proxy-config ${path.relative(root, proxyPath)})`,
+  );
 }
 
-function mergeProxyConfig(proxyConfigPath: string, addition: Record<string, any>) {
+function mergeProxyConfig(proxyConfigPath: string, addition: ProxyConfig) {
   const existing = readProxyConfig(proxyConfigPath);
   if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
     return {
@@ -134,7 +168,7 @@ function mergeProxyConfig(proxyConfigPath: string, addition: Record<string, any>
   return addition;
 }
 
-function readProxyConfig(filePath: string): Record<string, any> | null {
+function readProxyConfig(filePath: string): ProxyConfig | null {
   if (!fs.existsSync(filePath)) return null;
   try {
     const existing = JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -172,11 +206,11 @@ function findProxyConfigFromAngularJson(): string | null {
   if (!fs.existsSync(angularJsonPath)) return null;
 
   try {
-    const angularJson = JSON.parse(fs.readFileSync(angularJsonPath, 'utf8'));
+    const angularJson = JSON.parse(fs.readFileSync(angularJsonPath, 'utf8')) as AngularJson;
     const projects = angularJson?.projects ?? {};
 
     for (const project of Object.values(projects)) {
-      const targets = (project as any)?.architect || (project as any)?.targets;
+      const targets = project.architect || project.targets;
       const serve = targets?.serve;
       if (!serve) continue;
 
@@ -188,7 +222,7 @@ function findProxyConfigFromAngularJson(): string | null {
       const configurations = serve?.configurations;
       if (configurations && typeof configurations === 'object') {
         for (const config of Object.values(configurations)) {
-          const confProxy = (config as any)?.proxyConfig;
+          const confProxy = config?.proxyConfig;
           if (typeof confProxy === 'string' && confProxy.trim().length > 0) {
             return path.resolve(root, confProxy);
           }
@@ -287,7 +321,7 @@ function selectEditor(): Promise<string> {
           renderMenu();
           break;
         case '\r':
-        case '\n':
+        case '\n': {
           process.stdin.setRawMode(false);
           process.stdin.pause();
           process.stdin.removeListener('data', handleKeypress);
@@ -296,6 +330,7 @@ function selectEditor(): Promise<string> {
           console.log(`\n✨ Selected: ${selected.name}`);
           resolve(selected.value);
           break;
+        }
         case '\u0003':
           console.log('\n\nCancelled. Setting Cursor as default.');
           process.stdin.setRawMode(false);
