@@ -1,5 +1,7 @@
 # ngx-locatorjs (Angular Open-in-Editor)
 
+![2026-02-045 13 22-ezgif com-optimize](https://github.com/user-attachments/assets/9956e311-1af6-4096-9b9e-eb8dd6ea62be)
+
 한국어 문서: [README.ko.md](README.ko.md)
 
 Open Angular component files directly from the browser with **Alt + Click** during development. This package provides:
