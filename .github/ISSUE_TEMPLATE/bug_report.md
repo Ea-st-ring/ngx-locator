@@ -25,3 +25,6 @@ If applicable, add screenshots to help explain your problem.
 
 **Additional context**
 Add any other context about the problem here.
+
+**Checklist**
+- [ ] I have read the Contributing guidelines: /CONTRIBUTING.md
