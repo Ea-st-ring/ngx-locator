@@ -15,9 +15,10 @@
 1. 패키지 설치: `npm i -D ngx-locatorjs`
 2. 설정/프록시 생성: `npx locatorjs-config`
 3. `main.ts`에 런타임 훅 추가 (아래 예시 참고)
-4. 파일 오프너 서버 + dev 서버 실행 (둘 다 켜진 상태 유지): `npx locatorjs-open-in-editor --watch` + `ng serve --proxy-config ngx-locatorjs.proxy.json`
+4. 파일 오프너 서버 + dev 서버 실행 (둘 다 켜진 상태 유지): `npx locatorjs-open-in-editor --watch` + `ng serve --proxy-config {proxyConfigPath}`
 
-`npm run start` 사용 시 `--` 뒤에 전달: `npm run start -- --proxy-config ngx-locatorjs.proxy.json`
+`npm run start` 사용 시 `--` 뒤에 전달: `npm run start -- --proxy-config {proxyConfigPath}`
+`{proxyConfigPath}`는 `npx locatorjs-config`가 선택/병합한 실제 프록시 파일 경로로 바꿔서 사용하세요.
 
 **Angular 코드 추가 (main.ts)**
 
@@ -64,10 +65,10 @@ bootstrapApplication(AppComponent, appConfig)
 **Angular dev server 예시**
 
 - CLI 실행
-  `ng serve --proxy-config ngx-locatorjs.proxy.json`
+  `ng serve --proxy-config {proxyConfigPath}`
 
 - angular.json에 적용
-  `"serve"` 옵션에 `"proxyConfig": "ngx-locatorjs.proxy.json"` 추가
+  `"serve"` 옵션에 `"proxyConfig": "{proxyConfigPath}"` 추가
 
 **컴포넌트 맵 스캔**
 
@@ -150,8 +151,12 @@ bootstrapApplication(AppComponent, appConfig)
 3. `ngx-locatorjs.config.json`의 `editor`
 4. 자동 감지된 에디터
 
-**프록시 설정 (ngx-locatorjs.proxy.json)**
-`npx locatorjs-config` 실행 시 자동 생성됩니다. `angular.json`에 지정된 proxyConfig나 `proxy.conf.json`이 있으면 그 파일에 병합됩니다. 없으면 `ngx-locatorjs.proxy.json`을 생성합니다.
+**프록시 설정 ({proxyConfigPath})**
+`{proxyConfigPath}`는 `npx locatorjs-config` 실행 시 아래 규칙으로 결정됩니다.
+
+- `angular.json`에 `proxyConfig`가 지정되어 있으면 그 파일에 병합합니다.
+- 없고 `proxy.conf.json`이 있으면 그 파일에 병합합니다.
+- 둘 다 없으면 `ngx-locatorjs.proxy.json`을 생성합니다.
 
 예시:
 
@@ -178,9 +183,9 @@ bootstrapApplication(AppComponent, appConfig)
 **트러블슈팅**
 
 1. CORS 에러
-   `ng serve --proxy-config ngx-locatorjs.proxy.json` 사용 여부 확인
+   `ng serve --proxy-config {proxyConfigPath}` 사용 여부 확인
 2. npm run 경고
-   `npm run start -- --proxy-config ngx-locatorjs.proxy.json` 형태로 실행
+   `npm run start -- --proxy-config {proxyConfigPath}` 형태로 실행
 3. 네트워크 비활성
    `installAngularLocator({ enableNetwork: true })` 설정 확인
 4. component-map.json not found
@@ -194,7 +199,7 @@ bootstrapApplication(AppComponent, appConfig)
 8. 하이라이트가 안 보이거나 info가 null로 나옴
    `http://localhost:${port}/__cmp-map` 에서 컴포넌트 정보가 잘 나타나는지 확인
 9. 포트 충돌
-   `ngx-locatorjs.config.json`과 `ngx-locatorjs.proxy.json`에서 포트 일치 여부 확인
+   `ngx-locatorjs.config.json`과 `{proxyConfigPath}`에서 포트 일치 여부 확인
 
 **주의**
 
@@ -213,7 +218,7 @@ npm i -D concurrently
 ```json
 {
   "scripts": {
-    "dev:locator": "concurrently -k -n opener,ng \"npx locatorjs-open-in-editor\" \"ng serve --proxy-config ngx-locatorjs.proxy.json\""
+    "dev:locator": "concurrently -k -n opener,ng \"npx locatorjs-open-in-editor\" \"ng serve --proxy-config {proxyConfigPath}\""
   }
 }
 ```
@@ -228,7 +233,7 @@ npm i -D npm-run-all
 {
   "scripts": {
     "locator:opener": "npx locatorjs-open-in-editor",
-    "dev:app": "ng serve --proxy-config ngx-locatorjs.proxy.json",
+    "dev:app": "ng serve --proxy-config {proxyConfigPath}",
     "dev:locator": "run-p locator:opener dev:app"
   }
 }
