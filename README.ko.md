@@ -4,12 +4,14 @@
 이 프로젝트는 [locatorjs.com](https://www.locatorjs.com/)에서 영감을 받았습니다.
 
 **기능**
+
 - Alt+클릭: 템플릿(.html) 열기
 - Alt+Shift+클릭: 컴포넌트(.ts) 열기
 - Alt 키 홀드: 컴포넌트 하이라이트 + 툴팁 표시
 - Cursor, VS Code, WebStorm 지원
 
 **필수 단계 (1~4 반드시 수행)**
+
 1. 패키지 설치: `npm i -D ngx-locatorjs`
 2. 설정/프록시 생성: `npx locatorjs-config`
 3. `main.ts`에 런타임 훅 추가 (아래 예시 참고)
@@ -18,6 +20,7 @@
 `npm run start` 사용 시 `--` 뒤에 전달: `npm run start -- --proxy-config ngx-locatorjs.proxy.json`
 
 **Angular 코드 추가 (main.ts)**
+
 ```ts
 import { platformBrowserDynamic } from '@angular/platform-browser-dynamic';
 import { AppModule } from './app/app.module';
@@ -33,9 +36,7 @@ platformBrowserDynamic()
   .then(() => {
     if (!environment.production) {
       setTimeout(() => {
-        import('ngx-locatorjs').then((m) =>
-          m.installAngularLocator({ enableNetwork: true }),
-        );
+        import('ngx-locatorjs').then((m) => m.installAngularLocator({ enableNetwork: true }));
       }, 1000);
     }
   })
@@ -43,6 +44,7 @@ platformBrowserDynamic()
 ```
 
 **Angular 코드 추가 (standalone: bootstrapApplication)**
+
 ```ts
 import { bootstrapApplication } from '@angular/platform-browser';
 import { appConfig } from './app/app.config';
@@ -52,9 +54,7 @@ bootstrapApplication(AppComponent, appConfig)
   .then(() => {
     setTimeout(() => {
       import('ngx-locatorjs')
-        .then((m) =>
-          m.installAngularLocator({ enableNetwork: true }),
-        )
+        .then((m) => m.installAngularLocator({ enableNetwork: true }))
         .catch((err) => console.warn('[angular-locator] Failed to load:', err));
     }, 1000);
   })
@@ -62,56 +62,56 @@ bootstrapApplication(AppComponent, appConfig)
 ```
 
 **Angular dev server 예시**
+
 - CLI 실행
-`ng serve --proxy-config ngx-locatorjs.proxy.json`
+  `ng serve --proxy-config ngx-locatorjs.proxy.json`
 
 - angular.json에 적용
-`"serve"` 옵션에 `"proxyConfig": "ngx-locatorjs.proxy.json"` 추가
+  `"serve"` 옵션에 `"proxyConfig": "ngx-locatorjs.proxy.json"` 추가
 
 **컴포넌트 맵 스캔**
+
 - 수동 스캔
-`npx locatorjs-scan`
+  `npx locatorjs-scan`
 
 - 변경 감지 자동 스캔(선택)
-`nodemon --delay 2.5 -e ts,html -w src -w projects -w apps -w libs -x "npx locatorjs-scan"`
+  `nodemon --delay 2.5 -e ts,html -w src -w projects -w apps -w libs -x "npx locatorjs-scan"`
 
 **가능한 것**
+
 - Alt+클릭으로 템플릿 또는 컴포넌트 파일 열기 (개발 모드)
 - Alt 키 홀드 시 컴포넌트 하이라이트 및 툴팁 표시
 - 단일 Angular 앱, workspace, Nx 구조에서 동작
 
 **불가능/제한 사항**
+
 - SSR/SSG 환경에서는 동작하지 않음 (브라우저 DOM 기반)
 
 **ngx-locatorjs.config.json 가이드**
 파일 위치: 프로젝트 루트
 
 **중요**
+
 - `npx locatorjs-config`는 **실행한 현재 폴더를 기준**으로 설정합니다.
 - 기본값: `port: 4123`, `workspaceRoot: "."`.
 - 모노레포처럼 실제 Angular 앱이 하위 폴더에 있으면 `workspaceRoot`를 그 **상대 경로**로 수정하세요. (예: `apps/web`)
 - `.gitignore`가 있으면 `npx locatorjs-config`가 `.open-in-editor/`를 자동 추가합니다. 커밋하려면 해당 항목을 제거하세요.
 
 예시:
+
 ```json
 {
-  "port": 4123, // 프록시 서버가 실행될 포트 주소
-  "workspaceRoot": ".", // Angular 워크스페이스 루트
-  "editor": "cursor", // 파일을 열 때 사용할 에디터 (`cursor`, `code`, `webstorm`)
-  "fallbackEditor": "code", // 기본 에디터 실패 시 사용할 에디터
+  "port": 4123,
+  "workspaceRoot": ".",
+  "editor": "cursor",
+  "fallbackEditor": "code",
   "scan": {
-    /**
-     * 탐색할 컴포넌트의 경로 목록
-     */
     "includeGlobs": [
       "src/**/*.{ts,tsx}",
       "projects/**/*.{ts,tsx}",
       "apps/**/*.{ts,tsx}",
       "libs/**/*.{ts,tsx}"
     ],
-    /**
-     * 스캔에서 제외할 경로 목록
-     */
     "excludeGlobs": [
       "**/node_modules/**",
       "**/dist/**",
@@ -125,15 +125,26 @@ bootstrapApplication(AppComponent, appConfig)
 }
 ```
 
+**필드 설명**
+
+- `port`: 로컬 file-opener 서버 포트입니다.
+- `workspaceRoot`: 명령 실행 위치 기준 Angular 워크스페이스 루트 상대 경로입니다.
+- `editor`: 기본 에디터입니다 (`cursor`, `code`, `webstorm`).
+- `fallbackEditor`: 기본 에디터 실행 실패 시 사용할 대체 에디터입니다.
+- `scan.includeGlobs`: 컴포넌트 소스 파일 탐색 대상 glob 목록입니다.
+- `scan.excludeGlobs`: 컴포넌트 스캔에서 제외할 glob 목록입니다.
+
 **프로젝트 구조별 includeGlobs 예시**
+
 1. 일반 Angular 앱
-`["src/app/**/*.ts"]`
+   `["src/app/**/*.ts"]`
 2. Angular Workspace (projects/)
-`["projects/**/*.{ts,tsx}"]`
+   `["projects/**/*.{ts,tsx}"]`
 3. Nx (apps/libs)
-`["apps/**/*.{ts,tsx}", "libs/**/*.{ts,tsx}"]`
+   `["apps/**/*.{ts,tsx}", "libs/**/*.{ts,tsx}"]`
 
 **환경변수 우선순위**
+
 1. `EDITOR_CMD` 예: `EDITOR_CMD="cursor --goto"`
 2. `LAUNCH_EDITOR` 예: `LAUNCH_EDITOR=code`
 3. `ngx-locatorjs.config.json`의 `editor`
@@ -143,6 +154,7 @@ bootstrapApplication(AppComponent, appConfig)
 `npx locatorjs-config` 실행 시 자동 생성됩니다. `angular.json`에 지정된 proxyConfig나 `proxy.conf.json`이 있으면 그 파일에 병합됩니다. 없으면 `ngx-locatorjs.proxy.json`을 생성합니다.
 
 예시:
+
 ```json
 {
   "/__open-in-editor": {
@@ -164,26 +176,28 @@ bootstrapApplication(AppComponent, appConfig)
 ```
 
 **트러블슈팅**
+
 1. CORS 에러
-`ng serve --proxy-config ngx-locatorjs.proxy.json` 사용 여부 확인
+   `ng serve --proxy-config ngx-locatorjs.proxy.json` 사용 여부 확인
 2. npm run 경고
-`npm run start -- --proxy-config ngx-locatorjs.proxy.json` 형태로 실행
+   `npm run start -- --proxy-config ngx-locatorjs.proxy.json` 형태로 실행
 3. 네트워크 비활성
-`installAngularLocator({ enableNetwork: true })` 설정 확인
+   `installAngularLocator({ enableNetwork: true })` 설정 확인
 4. component-map.json not found
-`npx locatorjs-scan` 실행 후 `.open-in-editor/component-map.json` 생성 여부 확인
+   `npx locatorjs-scan` 실행 후 `.open-in-editor/component-map.json` 생성 여부 확인
 5. 컴포넌트 변경이 반영되지 않음
-`npx locatorjs-open-in-editor --watch` 사용 또는 `npx locatorjs-scan` 재실행
+   `npx locatorjs-open-in-editor --watch` 사용 또는 `npx locatorjs-scan` 재실행
 6. 스캔 결과가 비어있거나 컴포넌트가 누락됨
-`scan.includeGlobs` 경로 확인 후 재스캔. 실제 컴포넌트들이 위치한 경로를 입력해야 합니다.
+   `scan.includeGlobs` 경로 확인 후 재스캔. 실제 컴포넌트들이 위치한 경로를 입력해야 합니다.
 7. 잘못된 파일이 열리거나 매칭이 안 됨
-`workspaceRoot`가 Angular 앱 루트인지 확인
+   `workspaceRoot`가 Angular 앱 루트인지 확인
 8. 하이라이트가 안 보이거나 info가 null로 나옴
-`http://localhost:${port}/__cmp-map` 에서 컴포넌트 정보가 잘 나타나는지 확인
+   `http://localhost:${port}/__cmp-map` 에서 컴포넌트 정보가 잘 나타나는지 확인
 9. 포트 충돌
-`ngx-locatorjs.config.json`과 `ngx-locatorjs.proxy.json`에서 포트 일치 여부 확인
+   `ngx-locatorjs.config.json`과 `ngx-locatorjs.proxy.json`에서 포트 일치 여부 확인
 
 **주의**
+
 - 개발 모드에서만 사용하세요. 프로덕션 번들에 포함되지 않도록 `environment.production` 체크를 권장합니다.
 - 네트워크 요청은 opt-in이며 localhost로만 제한됩니다. `enableNetwork: true`로 활성화하세요.
 
@@ -191,6 +205,7 @@ bootstrapApplication(AppComponent, appConfig)
 file-opener 서버와 Angular dev server를 한 번에 띄우려면 아래 방식 중 하나를 사용하세요.
 
 ### Option A: `concurrently`
+
 ```bash
 npm i -D concurrently
 ```
@@ -204,6 +219,7 @@ npm i -D concurrently
 ```
 
 ### Option B: `npm-run-all`
+
 ```bash
 npm i -D npm-run-all
 ```

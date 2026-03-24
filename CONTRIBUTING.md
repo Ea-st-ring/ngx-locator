@@ -1,36 +1,51 @@
 # Contributing
 
-Thanks for your interest in contributing to `ngx-locatorjs`. This project is small and practical, so we keep the process simple and focused.
+Thanks for contributing to `ngx-locatorjs`.
 
-**Workflow**
-1. Open an issue describing the problem or proposal.
-2. Wait for feedback or confirmation.
-3. Submit a pull request that references the issue.
+## Scope
 
-**Development Setup**
+This repository ships:
+
+1. Browser runtime (`src/browser`) for Alt+Click / hover behavior.
+2. Node CLIs (`src/node`) for config setup, component scan, and open-in-editor server.
+
+Please keep changes focused and avoid mixing unrelated refactors in one PR.
+
+## Development Setup
+
 ```bash
 npm install
 ```
 
-**Build**
+## Local Checks
+
+Run these before opening a PR:
+
 ```bash
 npm run build
+npm run format:check
 ```
 
-**Lint and Format**
+If formatting fails:
+
 ```bash
-npm run format && npm run lint
+npm run format
 ```
 
-**Code Style**
-1. Keep changes minimal and readable.
-2. Prefer explicit, maintainable code over cleverness.
-3. Avoid unrelated refactors in the same PR.
+## Change Guidelines
 
-**Pull Request Checklist**
-1. Link the issue in the PR description.
-2. Explain what changed and why.
-3. Confirm `npm run build` passes.
+1. Keep behavior backward-compatible unless the change explicitly introduces a breaking change.
+2. Update README docs when CLI options, config shape, or runtime behavior changes.
+3. Keep generated build output in `dist/` out of commits unless release automation explicitly requires it.
 
-**Where To Ask Questions**
-Use GitHub Issues for questions and proposals.
+## Pull Requests
+
+1. Link the related issue (or explain why no issue exists).
+2. Describe what changed and why.
+3. List validation steps you ran (`build`, `format:check`, manual test scenario).
+4. Keep PRs reviewable in size; split large unrelated edits.
+
+## Questions
+
+Open a GitHub Issue:
+https://github.com/Ea-st-ring/ngx-locator/issues

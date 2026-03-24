@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { Project, SyntaxKind } from 'ts-morph';
+import ts from 'typescript';
 import fs from 'fs';
 import path from 'path';
+import { glob } from 'glob';
 
 type CmpInfo = {
   className: string;
@@ -61,28 +62,82 @@ function toPosix(p: string): string {
   return p.replace(/\\/g, '/');
 }
 
-function prefixWorkspaceRoot(glob: string, workspaceRoot: string): string {
-  if (!workspaceRoot || workspaceRoot === '.' || workspaceRoot === './') return glob;
-  if (path.isAbsolute(glob)) return glob;
+function prefixWorkspaceRoot(globPattern: string, workspaceRoot: string): string {
+  if (!workspaceRoot || workspaceRoot === '.' || workspaceRoot === './') return globPattern;
+  if (path.isAbsolute(globPattern)) return globPattern;
 
   const rootPosix = toPosix(workspaceRoot).replace(/\/+$/, '');
-  const globPosix = toPosix(glob).replace(/^\/+/, '');
+  const globPosix = toPosix(globPattern).replace(/^\/+/, '');
 
   if (globPosix.startsWith(rootPosix + '/')) return globPosix;
   return `${rootPosix}/${globPosix}`;
 }
 
-function globToNeedle(glob: string): string {
-  return toPosix(glob).replace(/\*\*/g, '').replace(/\*/g, '');
+function extractTemplateUrl(node: ts.ObjectLiteralExpression): string | undefined {
+  for (const prop of node.properties) {
+    if (
+      ts.isPropertyAssignment(prop) &&
+      ts.isIdentifier(prop.name) &&
+      prop.name.text === 'templateUrl'
+    ) {
+      const initializer = prop.initializer;
+      if (ts.isStringLiteral(initializer)) {
+        return initializer.text;
+      }
+    }
+  }
+  return undefined;
 }
 
-function isExcluded(filePath: string, excludeGlobs: string[]): boolean {
-  const normalized = toPosix(filePath);
-  return excludeGlobs.some((pattern) => {
-    const needle = globToNeedle(pattern);
-    if (!needle) return false;
-    return normalized.includes(needle);
-  });
+function findComponentDecorator(node: ts.ClassDeclaration): ts.Decorator | undefined {
+  if (!node.modifiers) return undefined;
+
+  for (const modifier of node.modifiers) {
+    if (ts.isDecorator(modifier)) {
+      const expr = modifier.expression;
+      if (ts.isCallExpression(expr) && ts.isIdentifier(expr.expression)) {
+        if (expr.expression.text === 'Component') {
+          return modifier;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+function parseSourceFile(filePath: string, sourceCode: string): CmpInfo[] {
+  const sourceFile = ts.createSourceFile(filePath, sourceCode, ts.ScriptTarget.Latest, true);
+
+  const components: CmpInfo[] = [];
+
+  function visit(node: ts.Node) {
+    if (ts.isClassDeclaration(node) && node.name) {
+      const componentDecorator = findComponentDecorator(node);
+      if (componentDecorator) {
+        const expr = componentDecorator.expression as ts.CallExpression;
+        const firstArg = expr.arguments[0];
+
+        if (firstArg && ts.isObjectLiteralExpression(firstArg)) {
+          const templateUrl = extractTemplateUrl(firstArg);
+          const className = node.name.text;
+
+          const absTs = path.resolve(root, filePath);
+          const absTpl = templateUrl ? path.resolve(path.dirname(absTs), templateUrl) : undefined;
+
+          components.push({
+            className,
+            filePath: absTs,
+            templateUrl: absTpl,
+          });
+        }
+      }
+    }
+
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return components;
 }
 
 async function main() {
@@ -124,17 +179,17 @@ async function main() {
     return stats;
   }
 
-  const project = new Project({
-    skipAddingFilesFromTsConfig: true,
-  });
+  const allFiles: string[] = [];
+  for (const pattern of effectiveIncludeGlobs) {
+    const files = await glob(pattern, {
+      ignore: excludeGlobs,
+      absolute: true,
+      cwd: root,
+    });
+    allFiles.push(...files);
+  }
 
-  project.addSourceFilesAtPaths(effectiveIncludeGlobs);
-
-  const sourceFiles = project
-    .getSourceFiles()
-    .filter((sf) => !isExcluded(sf.getFilePath(), excludeGlobs));
-
-  const filePaths = sourceFiles.map((sf) => sf.getFilePath());
+  const filePaths = [...new Set(allFiles)];
   const currentStats = getFileStats(filePaths);
   const previousCache = loadCache();
 
@@ -155,42 +210,18 @@ async function main() {
   const detailByFilePath: Record<string, CmpInfo> = {};
   const filePathsByClassName: Record<string, string[]> = {};
 
-  for (const sf of sourceFiles) {
-    const filePath = sf.getFilePath();
+  for (const filePath of filePaths) {
+    const sourceCode = fs.readFileSync(filePath, 'utf8');
+    const components = parseSourceFile(filePath, sourceCode);
 
-    const classes = sf.getClasses();
-    for (const cls of classes) {
-      const decorators = cls.getDecorators();
-      const comp = decorators.find((d) => d.getName() === 'Component');
-      if (!comp) continue;
+    for (const cmp of components) {
+      detailByFilePath[cmp.filePath] = cmp;
 
-      const arg = comp.getCallExpression()?.getArguments()[0];
-      if (!arg || !arg.asKind(SyntaxKind.ObjectLiteralExpression)) continue;
-
-      const obj = arg.asKindOrThrow(SyntaxKind.ObjectLiteralExpression);
-
-      const templateUrlProp = obj.getProperty('templateUrl');
-      const templateUrl = templateUrlProp
-        ?.asKind(SyntaxKind.PropertyAssignment)
-        ?.getInitializer()
-        ?.getText()
-        .replace(/^`|^'|^"|"|'|`$/g, '');
-
-      const className = cls.getName();
-      if (!className) continue;
-
-      const absTs = path.resolve(root, filePath);
-      const absTpl = templateUrl ? path.resolve(path.dirname(absTs), templateUrl) : undefined;
-
-      detailByFilePath[absTs] = {
-        className,
-        filePath: absTs,
-        templateUrl: absTpl,
-      };
-
-      if (!filePathsByClassName[className]) filePathsByClassName[className] = [];
-      if (!filePathsByClassName[className].includes(absTs)) {
-        filePathsByClassName[className].push(absTs);
+      if (!filePathsByClassName[cmp.className]) {
+        filePathsByClassName[cmp.className] = [];
+      }
+      if (!filePathsByClassName[cmp.className].includes(cmp.filePath)) {
+        filePathsByClassName[cmp.className].push(cmp.filePath);
       }
     }
   }
