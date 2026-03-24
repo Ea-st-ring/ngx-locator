@@ -8,7 +8,7 @@
 - Alt+클릭: 템플릿(.html) 열기
 - Alt+Shift+클릭: 컴포넌트(.ts) 열기
 - Alt 키 홀드: 컴포넌트 하이라이트 + 툴팁 표시
-- Cursor, VS Code, WebStorm 지원
+- Antigravity IDE, Cursor, Zed, VS Code, WebStorm 지원
 
 **필수 단계 (1~4 반드시 수행)**
 
@@ -130,7 +130,7 @@ bootstrapApplication(AppComponent, appConfig)
 
 - `port`: 로컬 file-opener 서버 포트입니다.
 - `workspaceRoot`: 명령 실행 위치 기준 Angular 워크스페이스 루트 상대 경로입니다.
-- `editor`: 기본 에디터입니다 (`cursor`, `code`, `webstorm`).
+- `editor`: 기본 에디터입니다 (`cursor`, `zed`, `antigravity`, `code`, `webstorm`).
 - `fallbackEditor`: 기본 에디터 실행 실패 시 사용할 대체 에디터입니다.
 - `scan.includeGlobs`: 컴포넌트 소스 파일 탐색 대상 glob 목록입니다.
 - `scan.excludeGlobs`: 컴포넌트 스캔에서 제외할 glob 목록입니다.

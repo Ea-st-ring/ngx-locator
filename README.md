@@ -17,7 +17,7 @@ Inspired by [locatorjs.com](https://www.locatorjs.com/).
 - **Alt + Click**: open template (.html)
 - **Alt + Shift + Click**: open component (.ts)
 - **Hold Alt**: highlight component + tooltip
-- Supports **Cursor**, **VS Code**, **WebStorm**
+- Supports **Antigravity IDE**, **Cursor**, **Zed**, **VS Code**, **WebStorm**
 
 ## Install
 
@@ -130,7 +130,7 @@ Example:
 
 - `port`: Port for the local file-opener server.
 - `workspaceRoot`: Angular workspace root path (relative to where you run commands).
-- `editor`: Preferred editor (`cursor`, `code`, `webstorm`).
+- `editor`: Preferred editor (`cursor`, `zed`, `antigravity`, `code`, `webstorm`).
 - `fallbackEditor`: Fallback editor if the preferred editor cannot be launched.
 - `scan.includeGlobs`: Globs used to find component source files.
 - `scan.excludeGlobs`: Globs excluded from component scanning.
