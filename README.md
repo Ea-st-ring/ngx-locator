@@ -238,3 +238,12 @@ npm i -D npm-run-all
 ## Limitations
 
 - Not supported in SSR/SSG runtime (browser DOM only)
+
+## Maintainer Note (Setup UX)
+
+Current setup works, but the first-time flow still feels too manual. You install, run
+`npx locatorjs-config`, add the bootstrap hook in `main.ts`, and then run opener + dev server
+with proxy config.
+
+This is an area we want to keep improving. Contributions that reduce setup friction are welcome,
+especially around safer automation, clearer defaults, and better error guidance.

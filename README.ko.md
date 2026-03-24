@@ -238,3 +238,10 @@ npm i -D npm-run-all
   }
 }
 ```
+
+** 고민 **
+
+처음 세팅할 때 귀찮은 단계가 많다고 느낍니다.
+설치하고, `npx locatorjs-config`를 돌리고, `main.ts`에 훅을 넣고, opener와 dev server를 proxy 설정과 함께 실행..
+
+이 흐름을 더 짧고 자연스럽게 만들고 싶습니다. 의견은 언제나 환영합니다.
