@@ -1,25 +1,34 @@
 {
   "name": "ngx-locatorjs",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "LocatorJs open-in-editor tools for Angular projects",
-  "author": "antepost24",
-  "type": "module",
-  "license": "MIT",
   "keywords": [
     "angular",
-    "locatorjs",
-    "open-in-editor",
+    "component",
     "devtools",
-    "component"
+    "locatorjs",
+    "open-in-editor"
   ],
+  "homepage": "https://github.com/Ea-st-ring/ngx-locator#readme",
+  "bugs": {
+    "url": "https://github.com/Ea-st-ring/ngx-locator/issues"
+  },
+  "license": "MIT",
+  "author": "antepost24",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Ea-st-ring/ngx-locator.git"
   },
-  "bugs": {
-    "url": "https://github.com/Ea-st-ring/ngx-locator/issues"
+  "bin": {
+    "locatorjs-config": "dist/node/config-setup.js",
+    "locatorjs-open-in-editor": "dist/node/file-opener.js",
+    "locatorjs-scan": "dist/node/cmp-scan.js"
   },
-  "homepage": "https://github.com/Ea-st-ring/ngx-locator#readme",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
   "main": "dist/browser/index.js",
   "types": "dist/browser/index.d.ts",
   "exports": {
@@ -34,35 +43,21 @@
       "default": "./dist/browser/auto.js"
     }
   },
-  "bin": {
-    "locatorjs-open-in-editor": "dist/node/file-opener.js",
-    "locatorjs-config": "dist/node/config-setup.js",
-    "locatorjs-scan": "dist/node/cmp-scan.js"
-  },
-  "files": [
-    "dist",
-    "README.md"
-  ],
   "scripts": {
     "build": "npm run build:browser && npm run build:node",
     "build:browser": "tsc -p tsconfig.browser.json",
     "build:node": "tsc -p tsconfig.node.json",
     "clean": "rm -rf dist",
     "prepare": "npm run build",
-    "lint": "eslint \"src/**/*.{ts,tsx}\"",
-    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
-    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md}\""
+    "format": "oxfmt",
+    "format:check": "oxfmt --check"
   },
   "dependencies": {
-    "ts-morph": "^27.0.0"
+    "glob": "^11.0.0"
   },
   "devDependencies": {
-    "@typescript-eslint/eslint-plugin": "^7.18.0",
-    "@typescript-eslint/parser": "^7.18.0",
     "@types/node": "^18.18.0",
-    "eslint": "^8.57.1",
-    "eslint-config-prettier": "^9.1.0",
-    "prettier": "^3.2.5",
+    "oxfmt": "^0.35.0",
     "typescript": "^5.5.4"
   }
 }
