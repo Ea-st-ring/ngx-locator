@@ -260,6 +260,8 @@ function logDefaults() {
 function selectEditor(): Promise<string> {
   const availableEditors = [
     { name: 'Cursor', value: 'cursor' },
+    { name: 'Zed', value: 'zed' },
+    { name: 'Antigravity IDE', value: 'antigravity' },
     { name: 'VS Code', value: 'code' },
     { name: 'WebStorm', value: 'webstorm' },
   ];
@@ -276,7 +278,7 @@ function selectEditor(): Promise<string> {
     });
 
     return new Promise((resolve) => {
-      rl.question('\nEnter number (1-3, default: 1 for Cursor): ', (answer) => {
+      rl.question('\nEnter number (1-5, default: 1 for Cursor): ', (answer) => {
         rl.close();
         const choice = parseInt(answer.trim(), 10) || 1;
         const selected =
