@@ -56,7 +56,7 @@
     "publish:github": "node scripts/publish-github.mjs"
   },
   "dependencies": {
-    "glob": "^11.0.0"
+    "glob": "^13.0.6"
   },
   "devDependencies": {
     "@types/node": "^18.18.0",

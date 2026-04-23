@@ -81,13 +81,15 @@ function checkEditorCLI(editorName: string, cliCommand = editorName) {
 }
 
 const MAC_APP_NAMES: Record<string, string> = {
+  antigravity: 'Antigravity IDE',
   cursor: 'Cursor',
   code: 'Visual Studio Code',
+  zed: 'Zed',
   webstorm: 'WebStorm',
 };
 
 function detectAvailableEditors() {
-  const editors = ['cursor', 'code', 'webstorm'];
+  const editors = ['cursor', 'zed', 'antigravity', 'code', 'webstorm'];
   const available: Array<{ name: string; hasCliPrecision: boolean }> = [];
 
   for (const editor of editors) {
@@ -100,11 +102,21 @@ function detectAvailableEditors() {
 }
 
 const AVAILABLE_EDITORS = detectAvailableEditors();
-const DEFAULT_EDITOR =
-  process.env.LAUNCH_EDITOR || cfg.editor || AVAILABLE_EDITORS[0]?.name || 'cursor';
-const FALLBACK_EDITOR = cfg.fallbackEditor || AVAILABLE_EDITORS[1]?.name || 'code';
+const DEFAULT_EDITOR = process.env.LAUNCH_EDITOR || cfg.editor || 'cursor';
+const FALLBACK_EDITOR =
+  cfg.fallbackEditor ||
+  AVAILABLE_EDITORS.find((editor) => editor.name !== DEFAULT_EDITOR)?.name ||
+  'code';
 
 const COMMAND_TEMPLATES: Record<string, (file: string) => [string, string[]]> = {
+  antigravity: (file) => {
+    if (checkEditorCLI('antigravity')) {
+      return ['antigravity', ['--goto', file]];
+    }
+    const filePath = file.split(':')[0];
+    return ['open', ['-a', MAC_APP_NAMES.antigravity, filePath]];
+  },
+
   cursor: (file) => {
     if (checkEditorCLI('cursor')) {
       return ['cursor', ['--goto', file]];
@@ -119,6 +131,14 @@ const COMMAND_TEMPLATES: Record<string, (file: string) => [string, string[]]> = 
     }
     const filePath = file.split(':')[0];
     return ['open', ['-a', MAC_APP_NAMES.code, filePath]];
+  },
+
+  zed: (file) => {
+    if (checkEditorCLI('zed')) {
+      return ['zed', [file]];
+    }
+    const filePath = file.split(':')[0];
+    return ['open', ['-a', MAC_APP_NAMES.zed, filePath]];
   },
 
   webstorm: (file) => {

@@ -8,16 +8,17 @@
 - Alt+클릭: 템플릿(.html) 열기
 - Alt+Shift+클릭: 컴포넌트(.ts) 열기
 - Alt 키 홀드: 컴포넌트 하이라이트 + 툴팁 표시
-- Cursor, VS Code, WebStorm 지원
+- Antigravity IDE, Cursor, Zed, VS Code, WebStorm 지원
 
 **필수 단계 (1~4 반드시 수행)**
 
 1. 패키지 설치: `npm i -D ngx-locatorjs`
 2. 설정/프록시 생성: `npx locatorjs-config`
 3. `main.ts`에 런타임 훅 추가 (아래 예시 참고)
-4. 파일 오프너 서버 + dev 서버 실행 (둘 다 켜진 상태 유지): `npx locatorjs-open-in-editor --watch` + `ng serve --proxy-config ngx-locatorjs.proxy.cjs`
+4. 파일 오프너 서버 + dev 서버 실행 (둘 다 켜진 상태 유지): `npx locatorjs-open-in-editor --watch` + `ng serve --proxy-config {proxyConfigPath}`
 
-기존 0.3.0 버전에서 업그레이드했다면 `npx locatorjs-config`를 다시 실행해 `authToken`과 proxy 헤더를 재생성하고, `--proxy-config`(또는 `angular.json`)를 `ngx-locatorjs.proxy.cjs`로 맞추세요.
+`npm run start` 사용 시 `--` 뒤에 전달: `npm run start -- --proxy-config {proxyConfigPath}`
+`{proxyConfigPath}`는 `npx locatorjs-config`가 선택/병합한 실제 프록시 파일 경로로 바꿔서 사용하세요.
 
 **Angular 코드 추가 (main.ts)**
 
@@ -64,10 +65,10 @@ bootstrapApplication(AppComponent, appConfig)
 **Angular dev server 예시**
 
 - CLI 실행
-  `ng serve --proxy-config ngx-locatorjs.proxy.cjs`
+  `ng serve --proxy-config {proxyConfigPath}`
 
 - angular.json에 적용
-  `"serve"` 옵션에 `"proxyConfig": "ngx-locatorjs.proxy.cjs"` 추가
+  `"serve"` 옵션에 `"proxyConfig": "{proxyConfigPath}"` 추가
 
 **컴포넌트 맵 스캔**
 
@@ -93,7 +94,7 @@ bootstrapApplication(AppComponent, appConfig)
 **중요**
 
 - `npx locatorjs-config`는 **실행한 현재 폴더를 기준**으로 설정합니다.
-- 기본값: `host: "127.0.0.1"`, `port: 4123`, `workspaceRoot: "."`.
+- 기본값: `port: 4123`, `workspaceRoot: "."`.
 - 모노레포처럼 실제 Angular 앱이 하위 폴더에 있으면 `workspaceRoot`를 그 **상대 경로**로 수정하세요. (예: `apps/web`)
 - `.gitignore`가 있으면 `npx locatorjs-config`가 `.open-in-editor/`를 자동 추가합니다. 커밋하려면 해당 항목을 제거하세요.
 
@@ -101,12 +102,10 @@ bootstrapApplication(AppComponent, appConfig)
 
 ```json
 {
-  "host": "127.0.0.1",
   "port": 4123,
   "workspaceRoot": ".",
   "editor": "cursor",
   "fallbackEditor": "code",
-  "authToken": "locatorjs-config가 자동 생성",
   "scan": {
     "includeGlobs": [
       "src/**/*.{ts,tsx}",
@@ -130,11 +129,9 @@ bootstrapApplication(AppComponent, appConfig)
 **필드 설명**
 
 - `port`: 로컬 file-opener 서버 포트입니다.
-- `host`: file-opener 서버 바인드 주소입니다. 로컬 전용으로 `127.0.0.1` 사용을 권장합니다.
 - `workspaceRoot`: 명령 실행 위치 기준 Angular 워크스페이스 루트 상대 경로입니다.
-- `editor`: 기본 에디터입니다 (`cursor`, `code`, `webstorm`).
+- `editor`: 기본 에디터입니다 (`cursor`, `zed`, `antigravity`, `code`, `webstorm`).
 - `fallbackEditor`: 기본 에디터 실행 실패 시 사용할 대체 에디터입니다.
-- `authToken`: open-in-editor 서버 요청 검증 토큰입니다. `locatorjs-config`가 자동 생성합니다.
 - `scan.includeGlobs`: 컴포넌트 소스 파일 탐색 대상 glob 목록입니다.
 - `scan.excludeGlobs`: 컴포넌트 스캔에서 제외할 glob 목록입니다.
 
@@ -154,25 +151,41 @@ bootstrapApplication(AppComponent, appConfig)
 3. `ngx-locatorjs.config.json`의 `editor`
 4. 자동 감지된 에디터
 
-**프록시 설정 (ngx-locatorjs.proxy.cjs)**
-`npx locatorjs-config` 실행 시 자동 생성됩니다. 이 파일은 실행 시점에 `ngx-locatorjs.config.json`을 읽어 target을 구성하므로, 포트를 바꾸려면 `ngx-locatorjs.config.json`의 `port`만 수정하면 됩니다.
+**프록시 설정 ({proxyConfigPath})**
+`{proxyConfigPath}`는 `npx locatorjs-config` 실행 시 아래 규칙으로 결정됩니다.
+
+- `angular.json`에 `proxyConfig`가 지정되어 있으면 그 파일에 병합합니다.
+- 없고 `proxy.conf.json`이 있으면 그 파일에 병합합니다.
+- 둘 다 없으면 `ngx-locatorjs.proxy.json`을 생성합니다.
 
 예시:
 
-```js
-module.exports = {
-  '/__open-in-editor': { target, secure: false, changeOrigin: true, headers },
-  '/__open-in-editor-search': { target, secure: false, changeOrigin: true, headers },
-  '/__cmp-map': { target, secure: false, changeOrigin: true, headers },
-};
+```json
+{
+  "/__open-in-editor": {
+    "target": "http://localhost:4123",
+    "secure": false,
+    "changeOrigin": true
+  },
+  "/__open-in-editor-search": {
+    "target": "http://localhost:4123",
+    "secure": false,
+    "changeOrigin": true
+  },
+  "/__cmp-map": {
+    "target": "http://localhost:4123",
+    "secure": false,
+    "changeOrigin": true
+  }
+}
 ```
 
 **트러블슈팅**
 
 1. CORS 에러
-   `ng serve --proxy-config ngx-locatorjs.proxy.cjs` 사용 여부 확인
+   `ng serve --proxy-config {proxyConfigPath}` 사용 여부 확인
 2. npm run 경고
-   `npm run start -- --proxy-config ngx-locatorjs.proxy.cjs` 형태로 실행
+   `npm run start -- --proxy-config {proxyConfigPath}` 형태로 실행
 3. 네트워크 비활성
    `installAngularLocator({ enableNetwork: true })` 설정 확인
 4. component-map.json not found
@@ -186,20 +199,31 @@ module.exports = {
 8. 하이라이트가 안 보이거나 info가 null로 나옴
    `http://localhost:${port}/__cmp-map` 에서 컴포넌트 정보가 잘 나타나는지 확인
 9. 포트 충돌
-   `ngx-locatorjs.config.json`의 `port`만 수정하면 됩니다
-10. opener 라우트에서 401 발생
-    `npx locatorjs-config` 재실행으로 토큰/프록시 헤더를 다시 생성하거나, 프록시 없이 직접 호출 시 `installAngularLocator`에 `authToken` 전달
+   `ngx-locatorjs.config.json`과 `{proxyConfigPath}`에서 포트 일치 여부 확인
 
 **주의**
 
 - 개발 모드에서만 사용하세요. 프로덕션 번들에 포함되지 않도록 `environment.production` 체크를 권장합니다.
 - 네트워크 요청은 opt-in이며 localhost로만 제한됩니다. `enableNetwork: true`로 활성화하세요.
-- opener 서버는 기본적으로 loopback(`127.0.0.1`)에만 바인드되며, `workspaceRoot` 바깥 파일은 열 수 없습니다.
 
 **원 커맨드 실행 (추천)**
-file-opener 서버와 Angular dev server를 한 번에 띄우려면 아래 방식을 사용하세요.
+file-opener 서버와 Angular dev server를 한 번에 띄우려면 아래 방식 중 하나를 사용하세요.
 
-### `npm-run-all`
+### Option A: `concurrently`
+
+```bash
+npm i -D concurrently
+```
+
+```json
+{
+  "scripts": {
+    "dev:locator": "concurrently -k -n opener,ng \"npx locatorjs-open-in-editor\" \"ng serve --proxy-config {proxyConfigPath}\""
+  }
+}
+```
+
+### Option B: `npm-run-all`
 
 ```bash
 npm i -D npm-run-all
@@ -209,8 +233,15 @@ npm i -D npm-run-all
 {
   "scripts": {
     "locator:opener": "npx locatorjs-open-in-editor",
-    "dev:app": "ng serve --proxy-config ngx-locatorjs.proxy.cjs",
+    "dev:app": "ng serve --proxy-config {proxyConfigPath}",
     "dev:locator": "run-p locator:opener dev:app"
   }
 }
 ```
+
+** 고민 **
+
+처음 세팅할 때 귀찮은 단계가 많다고 느낍니다.
+설치하고, `npx locatorjs-config`를 돌리고, `main.ts`에 훅을 넣고, opener와 dev server를 proxy 설정과 함께 실행..
+
+이 흐름을 더 짧고 자연스럽게 만들고 싶습니다. 의견은 언제나 환영합니다.
