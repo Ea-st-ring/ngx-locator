@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
 import { spawn } from 'child_process';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -10,16 +11,7 @@ const __dirname = path.dirname(__filename);
 
 const root = process.cwd();
 const CONFIG_FILENAME = 'ngx-locatorjs.config.json';
-const PROXY_FILENAME = 'ngx-locatorjs.proxy.json';
-
-type ProxyConfigEntry = {
-  target: string;
-  secure?: boolean;
-  changeOrigin?: boolean;
-  [key: string]: unknown;
-};
-
-type ProxyConfig = Record<string, ProxyConfigEntry>;
+const PROXY_FILENAME = 'ngx-locatorjs.proxy.cjs';
 
 type AngularServeConfig = {
   proxyConfig?: string;
@@ -71,40 +63,25 @@ if (fs.existsSync(configPath)) {
 async function startSetup() {
   try {
     logDefaults();
+    const authToken = generateAuthToken();
     const config = {
       port: 4123,
+      host: '127.0.0.1',
       workspaceRoot: '.',
       editor: await selectEditor(),
       fallbackEditor: 'code',
+      authToken,
       scan: await promptScanSettings(),
     };
 
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-    const proxyConfig: ProxyConfig = {
-      '/__open-in-editor': {
-        target: `http://localhost:${config.port}`,
-        secure: false,
-        changeOrigin: true,
-      },
-      '/__open-in-editor-search': {
-        target: `http://localhost:${config.port}`,
-        secure: false,
-        changeOrigin: true,
-      },
-      '/__cmp-map': {
-        target: `http://localhost:${config.port}`,
-        secure: false,
-        changeOrigin: true,
-      },
-    };
-
-    const mergedProxyConfig = mergeProxyConfig(proxyConfigPath, proxyConfig);
-    fs.writeFileSync(proxyConfigPath, JSON.stringify(mergedProxyConfig, null, 2));
+    fs.writeFileSync(proxyConfigPath, buildDynamicProxyModule());
 
     console.log('\n✅ Configuration saved successfully!');
     console.log(`📁 Config: ${path.relative(root, configPath)}`);
-    console.log(`🔗 Proxy: ${path.relative(root, proxyConfigPath)} (port: ${config.port})`);
+    console.log(`🔗 Proxy: ${path.relative(root, proxyConfigPath)} (dynamic from config port)`);
+    console.log('🔒 Request auth token generated and wired into proxy headers');
 
     ensureGitignoreEntries(['.open-in-editor/']);
 
@@ -154,49 +131,70 @@ function printNextSteps(proxyPath: string) {
   );
 }
 
-function mergeProxyConfig(proxyConfigPath: string, addition: ProxyConfig) {
-  const existing = readProxyConfig(proxyConfigPath);
-  if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
-    return {
-      ...existing,
-      ...addition,
-    };
+function buildDynamicProxyModule(): string {
+  return `'use strict';
+
+const fs = require('fs');
+const path = require('path');
+
+function loadLocatorConfig() {
+  const configPath = path.resolve(process.cwd(), '${CONFIG_FILENAME}');
+  try {
+    return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch {
+    return {};
   }
-  if (fs.existsSync(proxyConfigPath)) {
-    console.log('⚠️  Existing proxy config is not valid JSON. Overwriting with locator config.');
-  }
-  return addition;
 }
 
-function readProxyConfig(filePath: string): ProxyConfig | null {
-  if (!fs.existsSync(filePath)) return null;
-  try {
-    const existing = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
-      return existing;
-    }
-  } catch {
-    // ignore parse errors
-  }
-  return null;
+const cfg = loadLocatorConfig();
+const host = typeof cfg.host === 'string' && cfg.host.trim() ? cfg.host.trim() : '127.0.0.1';
+const port = Number(process.env.OPEN_IN_EDITOR_PORT || cfg.port || 4123);
+const authToken = typeof cfg.authToken === 'string' ? cfg.authToken : '';
+const headers = authToken ? { 'x-locatorjs-token': authToken } : {};
+const target = \`http://\${host}:\${port}\`;
+
+module.exports = {
+  '/__open-in-editor': {
+    target,
+    secure: false,
+    changeOrigin: true,
+    headers,
+  },
+  '/__open-in-editor-search': {
+    target,
+    secure: false,
+    changeOrigin: true,
+    headers,
+  },
+  '/__cmp-map': {
+    target,
+    secure: false,
+    changeOrigin: true,
+    headers,
+  },
+};
+`;
 }
 
 function resolveProxyConfigPath(): string {
   const angularProxyPath = findProxyConfigFromAngularJson();
   if (angularProxyPath) {
-    if (path.extname(angularProxyPath) !== '.json') {
+    const ext = path.extname(angularProxyPath).toLowerCase();
+    if (ext === '.js' || ext === '.cjs') {
+      return angularProxyPath;
+    }
+    if (ext === '.json') {
+      console.log(`⚠️  angular.json points to JSON proxy (${path.basename(angularProxyPath)}).`);
       console.log(
-        `⚠️  proxyConfig in angular.json is not a JSON file (${path.basename(
-          angularProxyPath,
-        )}). Creating ${PROXY_FILENAME} instead.`,
+        `   Creating dynamic proxy module ${PROXY_FILENAME} instead. Update angular.json proxyConfig to use it for single-source port management.`,
       );
       return path.resolve(root, PROXY_FILENAME);
     }
-    return angularProxyPath;
+    console.log(
+      `⚠️  Unsupported proxy extension (${path.basename(angularProxyPath)}). Creating ${PROXY_FILENAME} instead.`,
+    );
+    return path.resolve(root, PROXY_FILENAME);
   }
-
-  const defaultProxy = path.resolve(root, 'proxy.conf.json');
-  if (fs.existsSync(defaultProxy)) return defaultProxy;
 
   return path.resolve(root, PROXY_FILENAME);
 }
@@ -254,7 +252,12 @@ function ensureGitignoreEntries(entries: string[]) {
 function logDefaults() {
   console.log('⚙️  Defaults applied:');
   console.log('   → Port: 4123');
+  console.log('   → Host: 127.0.0.1');
   console.log('   → Workspace root: .');
+}
+
+function generateAuthToken(): string {
+  return crypto.randomBytes(24).toString('hex');
 }
 
 function selectEditor(): Promise<string> {

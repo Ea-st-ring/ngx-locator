@@ -16,6 +16,16 @@ type MapFile = {
   filePathsByClassName: Record<string, string[]>;
 };
 
+type ScanCacheEntry = {
+  mtimeMs: number;
+  components: CmpInfo[];
+};
+
+type ScanCache = {
+  version: 2;
+  files: Record<string, ScanCacheEntry>;
+};
+
 type ScanConfig = {
   includeGlobs?: string[];
   excludeGlobs?: string[];
@@ -154,15 +164,37 @@ async function main() {
   const cacheFile = path.join(outDir, 'scan-cache.json');
   fs.mkdirSync(outDir, { recursive: true });
 
-  function loadCache(): Record<string, number> {
+  function loadCache(): ScanCache {
     try {
-      return JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+      const raw = JSON.parse(fs.readFileSync(cacheFile, 'utf8')) as unknown;
+      if (!raw || typeof raw !== 'object') return { version: 2, files: {} };
+
+      const typed = raw as Partial<ScanCache>;
+      if (typed.version === 2 && typed.files && typeof typed.files === 'object') {
+        return {
+          version: 2,
+          files: typed.files,
+        };
+      }
+
+      // Backward compatibility for old cache shape: { [filePath]: mtimeMs }
+      const files: Record<string, ScanCacheEntry> = {};
+      for (const [filePath, mtime] of Object.entries(raw as Record<string, unknown>)) {
+        if (typeof mtime === 'number') {
+          files[filePath] = {
+            // Force one-time reparsing after legacy-cache migration.
+            mtimeMs: -1,
+            components: [],
+          };
+        }
+      }
+      return { version: 2, files };
     } catch {
-      return {};
+      return { version: 2, files: {} };
     }
   }
 
-  function saveCache(cache: Record<string, number>) {
+  function saveCache(cache: ScanCache) {
     fs.writeFileSync(cacheFile, JSON.stringify(cache, null, 2));
   }
 
@@ -192,28 +224,44 @@ async function main() {
   const filePaths = [...new Set(allFiles)];
   const currentStats = getFileStats(filePaths);
   const previousCache = loadCache();
+  const previousFiles = previousCache.files;
+  const previousPaths = Object.keys(previousFiles);
 
-  const hasChanges = filePaths.some(
-    (filePath) => !previousCache[filePath] || previousCache[filePath] !== currentStats[filePath],
-  );
+  const changedOrNewPaths = filePaths.filter((filePath) => {
+    const currentMtime = currentStats[filePath];
+    const cached = previousFiles[filePath];
+    return !cached || cached.mtimeMs !== currentMtime;
+  });
 
-  const cachedPaths = Object.keys(previousCache);
-  const hasNewOrDeletedFiles =
-    filePaths.length !== cachedPaths.length ||
-    filePaths.some((p) => !previousCache[p]) ||
-    cachedPaths.some((p) => !currentStats[p]);
+  const deletedPaths = previousPaths.filter((cachedPath) => !currentStats[cachedPath]);
 
-  if (!hasChanges && !hasNewOrDeletedFiles && fs.existsSync(outFile)) {
+  if (changedOrNewPaths.length === 0 && deletedPaths.length === 0 && fs.existsSync(outFile)) {
     process.exit(0);
+  }
+
+  const nextFiles: Record<string, ScanCacheEntry> = {};
+
+  for (const filePath of filePaths) {
+    const previous = previousFiles[filePath];
+    const currentMtime = currentStats[filePath];
+    if (previous && previous.mtimeMs === currentMtime) {
+      nextFiles[filePath] = previous;
+      continue;
+    }
+
+    const sourceCode = fs.readFileSync(filePath, 'utf8');
+    const components = parseSourceFile(filePath, sourceCode);
+    nextFiles[filePath] = {
+      mtimeMs: currentMtime,
+      components,
+    };
   }
 
   const detailByFilePath: Record<string, CmpInfo> = {};
   const filePathsByClassName: Record<string, string[]> = {};
 
-  for (const filePath of filePaths) {
-    const sourceCode = fs.readFileSync(filePath, 'utf8');
-    const components = parseSourceFile(filePath, sourceCode);
-
+  for (const entry of Object.values(nextFiles)) {
+    const components = entry.components;
     for (const cmp of components) {
       detailByFilePath[cmp.filePath] = cmp;
 
@@ -233,12 +281,12 @@ async function main() {
   };
   fs.writeFileSync(outFile, JSON.stringify(out, null, 2));
 
-  saveCache(currentStats);
+  saveCache({
+    version: 2,
+    files: nextFiles,
+  });
   console.log(
-    `[cmp-scan] ✅ Saved ${Object.keys(detailByFilePath).length} components to ${path.relative(
-      root,
-      outFile,
-    )}`,
+    `[cmp-scan] ✅ Saved ${Object.keys(detailByFilePath).length} components to ${path.relative(root, outFile)} (updated ${changedOrNewPaths.length}, removed ${deletedPaths.length})`,
   );
 }
 

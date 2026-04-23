@@ -49,8 +49,11 @@
     "build:node": "tsc -p tsconfig.node.json",
     "clean": "rm -rf dist",
     "prepare": "npm run build",
+    "test": "node --test",
+    "test:ci": "npm run build && npm test",
     "format": "oxfmt",
-    "format:check": "oxfmt --check"
+    "format:check": "oxfmt --check",
+    "publish:github": "node scripts/publish-github.mjs"
   },
   "dependencies": {
     "glob": "^13.0.6"
