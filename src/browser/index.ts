@@ -39,6 +39,7 @@ export type AngularLocatorOptions = {
   enableClick?: boolean;
   showTooltip?: boolean;
   showClickFeedback?: boolean;
+  authToken?: string;
   debug?: boolean;
 };
 
@@ -50,6 +51,7 @@ type ResolvedOptions = {
   enableClick: boolean;
   showTooltip: boolean;
   showClickFeedback: boolean;
+  authToken: string | null;
   debug: boolean;
 };
 
@@ -67,6 +69,7 @@ const DEFAULT_OPTIONS: ResolvedOptions = {
   enableClick: true,
   showTooltip: true,
   showClickFeedback: true,
+  authToken: null,
   debug: false,
 };
 
@@ -103,6 +106,23 @@ function assertNetworkAllowed(url: string): string {
   return resolved.toString();
 }
 
+function attachAuthToken(url: string): string {
+  if (!OPTIONS.authToken) return url;
+
+  const resolved = new URL(url, window.location.href);
+  if (!resolved.searchParams.has('token')) {
+    resolved.searchParams.set('token', OPTIONS.authToken);
+  }
+  return resolved.toString();
+}
+
+function getAuthHeaders(): HeadersInit | undefined {
+  if (!OPTIONS.authToken) return undefined;
+  return {
+    'x-locatorjs-token': OPTIONS.authToken,
+  };
+}
+
 function normalizeMap(map: CmpMap): CmpMap {
   if (!map.filePathsByClassName || Object.keys(map.filePathsByClassName).length === 0) {
     const rebuilt: Record<string, string[]> = {};
@@ -121,13 +141,14 @@ async function ensureMap(forceRefresh = false): Promise<CmpMap> {
 
   const timestamp = Date.now();
   const res = await fetch(
-    assertNetworkAllowed(`${OPTIONS.endpoints.componentMap}?t=${timestamp}`),
+    attachAuthToken(assertNetworkAllowed(`${OPTIONS.endpoints.componentMap}?t=${timestamp}`)),
     {
       cache: 'no-store',
       headers: {
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         Pragma: 'no-cache',
         Expires: '0',
+        ...getAuthHeaders(),
       },
     },
   );
@@ -278,11 +299,13 @@ function getNearestComponent(el: Element): LocatorComponent | null {
 }
 
 async function openFile(absPath: string, line = 1, col = 1) {
-  const url = assertNetworkAllowed(
-    `${OPTIONS.endpoints.openInEditor}?file=${encodeURIComponent(absPath)}&line=${line}&col=${col}`,
+  const url = attachAuthToken(
+    assertNetworkAllowed(
+      `${OPTIONS.endpoints.openInEditor}?file=${encodeURIComponent(absPath)}&line=${line}&col=${col}`,
+    ),
   );
   try {
-    await fetch(url);
+    await fetch(url, { headers: getAuthHeaders() });
   } catch (e) {
     if (OPTIONS.debug) {
       console.warn(e);
@@ -291,13 +314,15 @@ async function openFile(absPath: string, line = 1, col = 1) {
 }
 
 async function openFileWithSearch(absPath: string, searchTerms: string[]) {
-  const url = assertNetworkAllowed(
-    `${OPTIONS.endpoints.openInEditorSearch}?file=${encodeURIComponent(absPath)}&search=${encodeURIComponent(
-      JSON.stringify(searchTerms),
-    )}`,
+  const url = attachAuthToken(
+    assertNetworkAllowed(
+      `${OPTIONS.endpoints.openInEditorSearch}?file=${encodeURIComponent(absPath)}&search=${encodeURIComponent(
+        JSON.stringify(searchTerms),
+      )}`,
+    ),
   );
   try {
-    await fetch(url);
+    await fetch(url, { headers: getAuthHeaders() });
   } catch (e) {
     if (OPTIONS.debug) {
       console.warn('[angular-locator] Search failed:', e);
@@ -644,6 +669,7 @@ export async function installAngularLocator(options: AngularLocatorOptions = {})
   const mergedOptions: ResolvedOptions = {
     ...DEFAULT_OPTIONS,
     ...options,
+    authToken: options.authToken ?? DEFAULT_OPTIONS.authToken,
     endpoints: {
       ...DEFAULT_ENDPOINTS,
       ...options.endpoints,

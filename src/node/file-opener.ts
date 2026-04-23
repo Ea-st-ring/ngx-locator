@@ -4,6 +4,7 @@ import path from 'path';
 import childProcess from 'child_process';
 import http from 'http';
 import { spawn } from 'child_process';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -27,9 +28,11 @@ type ScanConfig = {
 
 type OpenInEditorConfig = {
   port?: number;
+  host?: string;
   editor?: string;
   fallbackEditor?: string;
   workspaceRoot?: string;
+  authToken?: string;
   scan?: ScanConfig;
 };
 
@@ -53,9 +56,14 @@ const scanIncludeGlobs = cfgScan.includeGlobs ?? DEFAULT_INCLUDE_GLOBS;
 const scanWorkspaceRoot = cfg.workspaceRoot?.trim() || '.';
 
 const cfgPort = cfg.port;
+const cfgHost = cfg.host?.trim();
 
 const PORT = Number(process.env.OPEN_IN_EDITOR_PORT || cfgPort || 4123);
+const HOST = process.env.OPEN_IN_EDITOR_HOST || cfgHost || '127.0.0.1';
+const AUTH_TOKEN = (process.env.OPEN_IN_EDITOR_TOKEN || cfg.authToken || '').trim() || null;
+const WORKSPACE_ROOT = path.resolve(root, scanWorkspaceRoot);
 const MAP_PATH = path.resolve(root, '.open-in-editor/component-map.json');
+const SAFE_WATCH_DIR_NAMES = new Set(['node_modules', 'dist', '.git', '.angular', 'coverage']);
 
 const editorCLICache: Record<string, boolean> = {};
 function checkEditorCLI(editorName: string, cliCommand = editorName) {
@@ -204,6 +212,55 @@ function findBestLineInFile(filePath: string, searchTerms: string[]) {
   }
 }
 
+function getWatchRoots(includeGlobs: string[], workspaceRoot: string): string[] {
+  const roots = new Set<string>();
+
+  includeGlobs.forEach((glob) => {
+    const base = globToBaseDir(glob);
+    const resolved = path.resolve(root, workspaceRoot, base);
+    if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+      roots.add(resolved);
+    }
+  });
+
+  return Array.from(roots);
+}
+
+function globToBaseDir(glob: string): string {
+  const wildcardIndex = glob.search(/[*?[\]{]/);
+  if (wildcardIndex === -1) return glob;
+  const prefix = glob.slice(0, wildcardIndex);
+  if (prefix.endsWith('/')) return prefix.slice(0, -1);
+  return path.dirname(prefix);
+}
+
+function collectNestedDirectories(baseDir: string, out = new Set<string>()) {
+  if (!fs.existsSync(baseDir)) return out;
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(baseDir);
+  } catch {
+    return out;
+  }
+  if (!stat.isDirectory()) return out;
+  if (out.has(baseDir)) return out;
+  out.add(baseDir);
+
+  let entries: fs.Dirent[] = [];
+  try {
+    entries = fs.readdirSync(baseDir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (SAFE_WATCH_DIR_NAMES.has(entry.name)) continue;
+    collectNestedDirectories(path.join(baseDir, entry.name), out);
+  }
+  return out;
+}
+
 function startScanWatch() {
   const scanScript = path.resolve(__dirname, 'cmp-scan.js');
   if (!fs.existsSync(scanScript)) {
@@ -217,8 +274,8 @@ function startScanWatch() {
     return;
   }
 
-  const recursive = process.platform === 'darwin' || process.platform === 'win32';
-  const watchers: fs.FSWatcher[] = [];
+  const supportsRecursive = process.platform === 'darwin' || process.platform === 'win32';
+  const watcherByPath = new Map<string, fs.FSWatcher>();
   let scanRunning = false;
   let scanQueued = false;
   let timer: NodeJS.Timeout | null = null;
@@ -253,59 +310,125 @@ function startScanWatch() {
 
   const scheduleScan = (reason: string) => {
     if (timer) clearTimeout(timer);
-    timer = setTimeout(() => runScan(reason), 500);
+    timer = setTimeout(() => runScan(reason), 400);
   };
 
-  const attachWatcher = (watchPath: string) => {
-    try {
-      const watcher = fs.watch(watchPath, { recursive }, (eventType, filename) => {
-        const detail = filename ? `${eventType}:${filename.toString()}` : eventType;
-        scheduleScan(detail);
-      });
-      watchers.push(watcher);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.log(`[file-opener] failed to watch ${watchPath}: ${message}`);
-      throw err;
+  const refreshWatchers = () => {
+    if (supportsRecursive) return;
+    const nextPaths = new Set<string>();
+    for (const baseRoot of roots) {
+      const dirs = collectNestedDirectories(baseRoot);
+      for (const dir of dirs) {
+        nextPaths.add(dir);
+      }
+    }
+
+    for (const [watchPath, watcher] of watcherByPath.entries()) {
+      if (!nextPaths.has(watchPath)) {
+        watcher.close();
+        watcherByPath.delete(watchPath);
+      }
+    }
+    for (const watchPath of nextPaths) {
+      attachWatcher(watchPath);
     }
   };
 
-  try {
+  const attachWatcher = (watchPath: string) => {
+    if (watcherByPath.has(watchPath)) return;
+    try {
+      const watcher = fs.watch(
+        watchPath,
+        { recursive: supportsRecursive },
+        (eventType, filename) => {
+          const detail = filename ? `${eventType}:${filename.toString()}` : eventType;
+          scheduleScan(detail);
+          if (!supportsRecursive && eventType === 'rename') {
+            refreshWatchers();
+          }
+        },
+      );
+      watcherByPath.set(watchPath, watcher);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.log(`[file-opener] failed to watch ${watchPath}: ${message}`);
+    }
+  };
+
+  if (supportsRecursive) {
     roots.forEach(attachWatcher);
-    console.log(
-      `[file-opener] watch enabled (${recursive ? 'recursive' : 'non-recursive'}): ${roots.join(
-        ', ',
-      )}`,
-    );
-  } catch {
-    watchers.forEach((w) => w.close());
-    console.log('[file-opener] falling back to polling scan every 5s');
-    setInterval(() => runScan('poll'), 5000);
+    console.log(`[file-opener] watch enabled (recursive): ${roots.join(', ')}`);
+  } else {
+    refreshWatchers();
+    console.log(`[file-opener] watch enabled (directory-mode): ${watcherByPath.size} directories`);
+    setInterval(refreshWatchers, 10000);
   }
 
   runScan('initial');
 }
 
-function getWatchRoots(includeGlobs: string[], workspaceRoot: string): string[] {
-  const roots = new Set<string>();
-
-  includeGlobs.forEach((glob) => {
-    const base = globToBaseDir(glob);
-    const resolved = path.resolve(root, workspaceRoot, base);
-    if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
-      roots.add(resolved);
-    }
-  });
-
-  return Array.from(roots);
+function safeCompareToken(actual: string, expected: string): boolean {
+  const actualBuffer = Buffer.from(actual);
+  const expectedBuffer = Buffer.from(expected);
+  if (actualBuffer.length !== expectedBuffer.length) return false;
+  return crypto.timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
-function globToBaseDir(glob: string): string {
-  const wildcardIndex = glob.search(/[*?[\]{]/);
-  if (wildcardIndex === -1) return glob;
-  const prefix = glob.slice(0, wildcardIndex);
-  if (prefix.endsWith('/')) return prefix.slice(0, -1);
-  return path.dirname(prefix);
+function extractRequestToken(req: http.IncomingMessage, url: URL): string | null {
+  const queryToken = url.searchParams.get('token');
+  if (queryToken) return queryToken;
+
+  const headerToken = req.headers['x-locatorjs-token'];
+  if (typeof headerToken === 'string' && headerToken.trim().length > 0) {
+    return headerToken.trim();
+  }
+
+  const authorization = req.headers.authorization;
+  if (typeof authorization === 'string' && authorization.startsWith('Bearer ')) {
+    return authorization.slice('Bearer '.length).trim();
+  }
+
+  return null;
+}
+
+function ensureAuthorized(req: http.IncomingMessage, url: URL): boolean {
+  if (!AUTH_TOKEN) return true;
+
+  const token = extractRequestToken(req, url);
+  if (!token) return false;
+  return safeCompareToken(token, AUTH_TOKEN);
+}
+
+function resolveAllowedFilePath(rawPath: string): string {
+  const trimmed = rawPath.trim();
+  if (!trimmed) {
+    throw new Error('file is required');
+  }
+  if (trimmed.includes('\0')) {
+    throw new Error('file path is invalid');
+  }
+
+  const resolved = path.isAbsolute(trimmed)
+    ? path.resolve(trimmed)
+    : path.resolve(WORKSPACE_ROOT, trimmed);
+
+  if (!fs.existsSync(resolved)) {
+    throw new Error('file does not exist');
+  }
+
+  const realWorkspaceRoot = fs.realpathSync(WORKSPACE_ROOT);
+  const realPath = fs.realpathSync(resolved);
+  const relative = path.relative(realWorkspaceRoot, realPath);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('file path is outside workspace root');
+  }
+
+  const stat = fs.statSync(realPath);
+  if (!stat.isFile()) {
+    throw new Error('path must be a file');
+  }
+
+  return realPath;
 }
 
 const server = http.createServer((req, res) => {
@@ -323,6 +446,12 @@ const server = http.createServer((req, res) => {
 
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = url.pathname;
+
+  if (!ensureAuthorized(req, url)) {
+    res.statusCode = 401;
+    res.end('Unauthorized request');
+    return;
+  }
 
   if (pathname === '/__cmp-map') {
     if (!fs.existsSync(MAP_PATH)) {
@@ -346,10 +475,19 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    const decoded = decodeURIComponent(file);
-    console.log(`[file-opener] Opening file: ${decoded}:${line}:${col}`);
+    let safePath: string;
+    try {
+      safePath = resolveAllowedFilePath(decodeURIComponent(file));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'invalid file';
+      res.statusCode = 403;
+      res.end(message);
+      return;
+    }
 
-    const fileWithPos = `${decoded}:${line}:${col}`;
+    console.log(`[file-opener] Opening file: ${safePath}:${line}:${col}`);
+
+    const fileWithPos = `${safePath}:${line}:${col}`;
     const ok = launchInEditor(fileWithPos);
 
     if (!ok) {
@@ -376,13 +514,26 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    const decoded = decodeURIComponent(file);
+    let safePath: string;
+    try {
+      safePath = resolveAllowedFilePath(decodeURIComponent(file));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'invalid file';
+      res.statusCode = 403;
+      res.end(message);
+      return;
+    }
 
     try {
       const searchTerms = JSON.parse(decodeURIComponent(searchParam));
-      const bestLine = findBestLineInFile(decoded, searchTerms);
+      if (!Array.isArray(searchTerms) || !searchTerms.every((term) => typeof term === 'string')) {
+        res.statusCode = 400;
+        res.end('search terms must be string[]');
+        return;
+      }
+      const bestLine = findBestLineInFile(safePath, searchTerms);
 
-      const fileWithPos = `${decoded}:${bestLine}:1`;
+      const fileWithPos = `${safePath}:${bestLine}:1`;
       const ok = launchInEditor(fileWithPos);
 
       if (!ok) {
@@ -406,10 +557,16 @@ const server = http.createServer((req, res) => {
 });
 
 server
-  .listen(PORT, () => {
-    console.log(`[file-opener] http://localhost:${PORT}`);
+  .listen(PORT, HOST, () => {
+    console.log(`[file-opener] http://${HOST}:${PORT}`);
     console.log(` - map: ${path.relative(root, MAP_PATH)}`);
     console.log(` - editor: ${DEFAULT_EDITOR} (fallback: ${FALLBACK_EDITOR})`);
+    console.log(` - workspace root: ${WORKSPACE_ROOT}`);
+    if (AUTH_TOKEN) {
+      console.log(' - auth: enabled');
+    } else {
+      console.log(' - auth: disabled (legacy config, run locatorjs-config to enable)');
+    }
 
     if (AVAILABLE_EDITORS.length > 0) {
       console.log(' - detected editors:');
