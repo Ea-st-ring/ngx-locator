@@ -1,7 +1,7 @@
 # ngx-locatorjs (Open-in-Editor)
 
+Angular 인기가 적어서인지 [LocatorJs](https://www.locatorjs.com/)와 같은 개발 도구가 없어 불편했습니다. 그래서 CODEX와 함께 만들어보았습니다.
 브라우저에서 Alt+클릭으로 Angular 컴포넌트 파일을 에디터에서 바로 여는 개발용 도구입니다. Angular 프로젝트 어디에나 npm 패키지로 설치해 사용할 수 있습니다.
-이 프로젝트는 [locatorjs.com](https://www.locatorjs.com/)에서 영감을 받았습니다.
 
 **기능**
 
@@ -109,19 +109,19 @@ bootstrapApplication(AppComponent, appConfig)
   "authToken": "locatorjs-config가 자동 생성",
   "scan": {
     "includeGlobs": [
-      "src/**/*.{ts,tsx}",
-      "projects/**/*.{ts,tsx}",
-      "apps/**/*.{ts,tsx}",
-      "libs/**/*.{ts,tsx}"
+      "src/**/*.{ts,tsx,js,jsx}",
+      "projects/**/*.{ts,tsx,js,jsx}",
+      "apps/**/*.{ts,tsx,js,jsx}",
+      "libs/**/*.{ts,tsx,js,jsx}"
     ],
     "excludeGlobs": [
       "**/node_modules/**",
       "**/dist/**",
       "**/.angular/**",
       "**/coverage/**",
-      "**/*.spec.ts",
-      "**/*.test.ts",
-      "**/*.e2e.ts"
+      "**/*.spec.{ts,tsx,js,jsx}",
+      "**/*.test.{ts,tsx,js,jsx}",
+      "**/*.e2e.{ts,tsx,js,jsx}"
     ]
   }
 }
@@ -138,14 +138,27 @@ bootstrapApplication(AppComponent, appConfig)
 - `scan.includeGlobs`: 컴포넌트 소스 파일 탐색 대상 glob 목록입니다.
 - `scan.excludeGlobs`: 컴포넌트 스캔에서 제외할 glob 목록입니다.
 
+**authToken 동작 방식 (0.5.0)**
+
+- `locatorjs-config`가 프로젝트별 `authToken`을 `ngx-locatorjs.config.json`에 자동 생성합니다.
+- `ngx-locatorjs.proxy.cjs`가 해당 토큰을 읽어 opener 라우트로 `x-locatorjs-token` 헤더를 전달합니다.
+- Angular proxy 없이 opener 엔드포인트를 직접 호출할 경우 `installAngularLocator(...)`에 `authToken`을 전달해야 인증됩니다.
+- `401 Unauthorized`가 발생하면 `npx locatorjs-config`를 다시 실행해 config/proxy를 재생성하세요.
+
+**자동 스캔 범위 탐색 (0.5.0)**
+
+- `locatorjs-config`가 스캔 루트를 자동으로 구성합니다.
+- 기본 탐색 확장자는 `ts/tsx/js/jsx`를 포함합니다.
+- 생성된 `scan.includeGlobs` / `scan.excludeGlobs`는 언제든 수동 수정 가능합니다.
+
 **프로젝트 구조별 includeGlobs 예시**
 
 1. 일반 Angular 앱
    `["src/app/**/*.ts"]`
 2. Angular Workspace (projects/)
-   `["projects/**/*.{ts,tsx}"]`
+   `["projects/**/*.{ts,tsx,js,jsx}"]`
 3. Nx (apps/libs)
-   `["apps/**/*.{ts,tsx}", "libs/**/*.{ts,tsx}"]`
+   `["apps/**/*.{ts,tsx,js,jsx}", "libs/**/*.{ts,tsx,js,jsx}"]`
 
 **환경변수 우선순위**
 

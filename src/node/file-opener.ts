@@ -41,10 +41,10 @@ function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
 }
 
 const DEFAULT_INCLUDE_GLOBS = [
-  'src/**/*.{ts,tsx}',
-  'projects/**/*.{ts,tsx}',
-  'apps/**/*.{ts,tsx}',
-  'libs/**/*.{ts,tsx}',
+  'src/**/*.{ts,tsx,js,jsx}',
+  'projects/**/*.{ts,tsx,js,jsx}',
+  'apps/**/*.{ts,tsx,js,jsx}',
+  'libs/**/*.{ts,tsx,js,jsx}',
 ];
 
 const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8')) as OpenInEditorConfig;

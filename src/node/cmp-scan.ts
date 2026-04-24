@@ -40,10 +40,10 @@ type OpenInEditorConfig = {
 };
 
 const DEFAULT_INCLUDE_GLOBS = [
-  'src/**/*.{ts,tsx}',
-  'projects/**/*.{ts,tsx}',
-  'apps/**/*.{ts,tsx}',
-  'libs/**/*.{ts,tsx}',
+  'src/**/*.{ts,tsx,js,jsx}',
+  'projects/**/*.{ts,tsx,js,jsx}',
+  'apps/**/*.{ts,tsx,js,jsx}',
+  'libs/**/*.{ts,tsx,js,jsx}',
 ];
 
 const DEFAULT_EXCLUDE_GLOBS = [
@@ -51,9 +51,9 @@ const DEFAULT_EXCLUDE_GLOBS = [
   '**/dist/**',
   '**/.angular/**',
   '**/coverage/**',
-  '**/*.spec.ts',
-  '**/*.test.ts',
-  '**/*.e2e.ts',
+  '**/*.spec.{ts,tsx,js,jsx}',
+  '**/*.test.{ts,tsx,js,jsx}',
+  '**/*.e2e.{ts,tsx,js,jsx}',
 ];
 
 const root = process.cwd();
