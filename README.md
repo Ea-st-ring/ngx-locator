@@ -4,6 +4,7 @@
 
 한국어 문서: [README.ko.md](README.ko.md)
 
+Angular doesn’t have many developer tools like LocatorJs, likely due to lower popularity, which has been inconvenient. So I built one together with CODEX.
 Open Angular component files directly from the browser with **Alt + Click** during development. This package provides:
 
 - Browser runtime for Alt+click / hover UI
@@ -109,19 +110,19 @@ Example:
   "authToken": "generated-by-locatorjs-config",
   "scan": {
     "includeGlobs": [
-      "src/**/*.{ts,tsx}",
-      "projects/**/*.{ts,tsx}",
-      "apps/**/*.{ts,tsx}",
-      "libs/**/*.{ts,tsx}"
+      "src/**/*.{ts,tsx,js,jsx}",
+      "projects/**/*.{ts,tsx,js,jsx}",
+      "apps/**/*.{ts,tsx,js,jsx}",
+      "libs/**/*.{ts,tsx,js,jsx}"
     ],
     "excludeGlobs": [
       "**/node_modules/**",
       "**/dist/**",
       "**/.angular/**",
       "**/coverage/**",
-      "**/*.spec.ts",
-      "**/*.test.ts",
-      "**/*.e2e.ts"
+      "**/*.spec.{ts,tsx,js,jsx}",
+      "**/*.test.{ts,tsx,js,jsx}",
+      "**/*.e2e.{ts,tsx,js,jsx}"
     ]
   }
 }
@@ -138,11 +139,24 @@ Example:
 - `scan.includeGlobs`: Globs used to find component source files.
 - `scan.excludeGlobs`: Globs excluded from component scanning.
 
+### authToken Behavior (0.5.0)
+
+- `locatorjs-config` generates a per-project `authToken` in `ngx-locatorjs.config.json`.
+- `ngx-locatorjs.proxy.cjs` reads that token and forwards it as `x-locatorjs-token` to opener routes.
+- If you skip Angular proxy and call opener endpoints directly, pass `authToken` to `installAngularLocator(...)` so requests are authorized.
+- If token mismatch occurs (`401 Unauthorized`), regenerate config/proxy: `npx locatorjs-config`.
+
+### Auto Scan Scope Discovery (0.5.0)
+
+- `locatorjs-config` now auto-detects scan roots.
+- Generated defaults now include `ts/tsx/js/jsx`.
+- You can always edit the generated `scan.includeGlobs` / `scan.excludeGlobs` manually.
+
 ### Example includeGlobs
 
 - Simple app: `"src/app/**/*.ts"`
-- Angular workspace: `"projects/**/*.{ts,tsx}"`
-- Nx: `"apps/**/*.{ts,tsx}", "libs/**/*.{ts,tsx}"`
+- Angular workspace: `"projects/**/*.{ts,tsx,js,jsx}"`
+- Nx: `"apps/**/*.{ts,tsx,js,jsx}", "libs/**/*.{ts,tsx,js,jsx}"`
 
 ## Proxy (`ngx-locatorjs.proxy.cjs`)
 

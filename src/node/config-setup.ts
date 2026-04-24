@@ -12,6 +12,20 @@ const __dirname = path.dirname(__filename);
 const root = process.cwd();
 const CONFIG_FILENAME = 'ngx-locatorjs.config.json';
 const PROXY_FILENAME = 'ngx-locatorjs.proxy.cjs';
+const ANSI_ENABLED = Boolean(process.stdout.isTTY);
+const IGNORED_SCAN_DIR_NAMES = new Set([
+  'node_modules',
+  'dist',
+  'coverage',
+  '.angular',
+  '.git',
+  '.nx',
+  '.turbo',
+  '.cache',
+  'build',
+  'out',
+  'tmp',
+]);
 
 type AngularServeConfig = {
   proxyConfig?: string;
@@ -23,6 +37,8 @@ type AngularServeTarget = {
 };
 
 type AngularProject = {
+  root?: string;
+  sourceRoot?: string;
   architect?: {
     serve?: AngularServeTarget;
   };
@@ -349,30 +365,324 @@ function selectEditor(): Promise<string> {
   });
 }
 
-function promptScanSettings() {
+async function promptScanSettings() {
   const defaultInclude = [
-    'src/**/*.{ts,tsx}',
-    'projects/**/*.{ts,tsx}',
-    'apps/**/*.{ts,tsx}',
-    'libs/**/*.{ts,tsx}',
+    'src/**/*.{ts,tsx,js,jsx}',
+    'projects/**/*.{ts,tsx,js,jsx}',
+    'apps/**/*.{ts,tsx,js,jsx}',
+    'libs/**/*.{ts,tsx,js,jsx}',
   ];
   const defaultExclude = [
     '**/node_modules/**',
     '**/dist/**',
     '**/.angular/**',
     '**/coverage/**',
-    '**/*.spec.ts',
-    '**/*.test.ts',
-    '**/*.e2e.ts',
+    '**/*.spec.{ts,tsx,js,jsx}',
+    '**/*.test.{ts,tsx,js,jsx}',
+    '**/*.e2e.{ts,tsx,js,jsx}',
   ];
 
-  console.log('\n📂 Scan settings (using defaults):');
-  console.log(`   → Include: ${JSON.stringify(defaultInclude)}`);
-  console.log(`   → Exclude: ${JSON.stringify(defaultExclude)}`);
-  console.log(`   💡 You can modify these later in ${CONFIG_FILENAME}`);
+  const includeGlobs = detectIncludeGlobs(defaultInclude);
+  const excludeGlobs = detectExcludeGlobs(defaultExclude);
+  printScanSettingsSummary(includeGlobs, excludeGlobs);
 
-  return Promise.resolve({
-    includeGlobs: defaultInclude,
-    excludeGlobs: defaultExclude,
+  return {
+    includeGlobs: includeGlobs.values,
+    excludeGlobs: excludeGlobs.values,
+  };
+}
+
+type IncludeDetectionResult = {
+  values: string[];
+  autoDetected: boolean;
+  sources: string[];
+};
+
+type ExcludeDetectionResult = {
+  values: string[];
+  autoDetected: boolean;
+  sources: string[];
+};
+
+function detectIncludeGlobs(defaultInclude: string[]): IncludeDetectionResult {
+  const sources: string[] = [];
+  let detectedBaseDirs = detectIncludeBaseDirsFromAngularJson();
+
+  if (detectedBaseDirs.size > 0) {
+    sources.push('angular.json');
+
+    const supplemental = detectSupplementalWorkspaceBaseDirs(detectedBaseDirs);
+    if (supplemental.size > 0) {
+      supplemental.forEach((dir) => detectedBaseDirs.add(dir));
+      sources.push('workspace directories (not declared in angular.json)');
+    }
+  } else {
+    detectedBaseDirs = detectIncludeBaseDirsFromConventionalLayout();
+    if (detectedBaseDirs.size > 0) {
+      sources.push('existing directories');
+    }
+  }
+
+  if (detectedBaseDirs.size > 0) {
+    return {
+      values: toGlobPatterns(detectedBaseDirs),
+      autoDetected: true,
+      sources,
+    };
+  }
+
+  return {
+    values: defaultInclude,
+    autoDetected: false,
+    sources: [],
+  };
+}
+
+function detectExcludeGlobs(defaultExclude: string[]): ExcludeDetectionResult {
+  const extraExcludeCandidates: Array<{ pattern: string; reason: string; when: boolean }> = [
+    { pattern: '**/.nx/**', reason: 'nx.json', when: fileExists('nx.json') },
+    { pattern: '**/.turbo/**', reason: 'turbo.json', when: fileExists('turbo.json') },
+    { pattern: '**/.cache/**', reason: '.cache directory', when: directoryExists('.cache') },
+    { pattern: '**/build/**', reason: 'build directory', when: directoryExists('build') },
+    { pattern: '**/out/**', reason: 'out directory', when: directoryExists('out') },
+    { pattern: '**/tmp/**', reason: 'tmp directory', when: directoryExists('tmp') },
+  ];
+
+  const values = [...defaultExclude];
+  const reasons: string[] = [];
+
+  for (const candidate of extraExcludeCandidates) {
+    if (!candidate.when) continue;
+    if (!values.includes(candidate.pattern)) {
+      values.push(candidate.pattern);
+      reasons.push(`${candidate.pattern} (${candidate.reason})`);
+    }
+  }
+
+  return {
+    values,
+    autoDetected: reasons.length > 0,
+    sources: reasons,
+  };
+}
+
+function detectIncludeBaseDirsFromAngularJson(): Set<string> {
+  const angularJsonPath = path.resolve(root, 'angular.json');
+  if (!fs.existsSync(angularJsonPath)) return new Set<string>();
+
+  try {
+    const angularJson = JSON.parse(fs.readFileSync(angularJsonPath, 'utf8')) as AngularJson;
+    const projects = angularJson?.projects ?? {};
+    const detectedBaseDirs = new Set<string>();
+
+    for (const project of Object.values(projects)) {
+      const sourceRoot = normalizeRelativePath(project.sourceRoot);
+      const projectRoot = normalizeRelativePath(project.root);
+
+      if (sourceRoot && directoryExists(sourceRoot)) {
+        detectedBaseDirs.add(sourceRoot);
+        continue;
+      }
+
+      if (!projectRoot) continue;
+
+      const srcUnderProjectRoot = normalizeRelativePath(path.posix.join(projectRoot, 'src'));
+      if (srcUnderProjectRoot && directoryExists(srcUnderProjectRoot)) {
+        detectedBaseDirs.add(srcUnderProjectRoot);
+      } else if (directoryExists(projectRoot)) {
+        detectedBaseDirs.add(projectRoot);
+      }
+    }
+
+    return detectedBaseDirs;
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function detectIncludeBaseDirsFromConventionalLayout(): Set<string> {
+  const conventionalDirs = ['src', 'projects', 'apps', 'libs'];
+  const detectedBaseDirs = new Set<string>();
+
+  for (const dir of conventionalDirs) {
+    if (directoryExists(dir)) {
+      detectedBaseDirs.add(dir);
+    }
+  }
+
+  return detectedBaseDirs;
+}
+
+function detectSupplementalWorkspaceBaseDirs(knownBaseDirs: Set<string>): Set<string> {
+  const roots = ['projects', 'apps', 'libs'];
+  const supplemental = new Set<string>();
+
+  for (const rootDir of roots) {
+    const rootPath = path.resolve(root, rootDir);
+    if (!directoryExists(rootDir)) continue;
+
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(rootPath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const candidate = normalizeRelativePath(path.posix.join(rootDir, entry.name));
+      if (!candidate) continue;
+      if (isCoveredByKnownBaseDirs(candidate, knownBaseDirs)) continue;
+      if (!directoryContainsScanCandidateFiles(candidate)) continue;
+      supplemental.add(candidate);
+    }
+  }
+
+  return supplemental;
+}
+
+function isCoveredByKnownBaseDirs(candidate: string, knownBaseDirs: Set<string>): boolean {
+  for (const known of knownBaseDirs) {
+    if (candidate === known) return true;
+    if (candidate.startsWith(`${known}/`)) return true;
+    if (known.startsWith(`${candidate}/`)) return true;
+  }
+  return false;
+}
+
+function directoryContainsScanCandidateFiles(relPath: string, maxDepth = 6): boolean {
+  const absolute = path.resolve(root, relPath);
+  return directoryContainsScanCandidateFilesRecursive(absolute, 0, maxDepth);
+}
+
+function directoryContainsScanCandidateFilesRecursive(
+  absolutePath: string,
+  currentDepth: number,
+  maxDepth: number,
+): boolean {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(absolutePath, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+
+  for (const entry of entries) {
+    if (entry.isFile() && /\.(ts|tsx|js|jsx)$/.test(entry.name)) {
+      return true;
+    }
+
+    if (!entry.isDirectory()) continue;
+    if (currentDepth >= maxDepth) continue;
+    if (IGNORED_SCAN_DIR_NAMES.has(entry.name)) continue;
+
+    const childPath = path.join(absolutePath, entry.name);
+    if (directoryContainsScanCandidateFilesRecursive(childPath, currentDepth + 1, maxDepth)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function toGlobPatterns(baseDirs: Set<string>): string[] {
+  if (baseDirs.size === 0) return [];
+
+  const preferredOrder = ['src', 'projects', 'apps', 'libs'];
+
+  return Array.from(baseDirs)
+    .sort((a, b) => {
+      const aIdx = preferredOrder.indexOf(a);
+      const bIdx = preferredOrder.indexOf(b);
+      const aRank = aIdx === -1 ? Number.MAX_SAFE_INTEGER : aIdx;
+      const bRank = bIdx === -1 ? Number.MAX_SAFE_INTEGER : bIdx;
+      if (aRank !== bRank) return aRank - bRank;
+      return a.localeCompare(b);
+    })
+    .map((baseDir) => `${baseDir}/**/*.{ts,tsx,js,jsx}`);
+}
+
+function normalizeRelativePath(value: string | undefined): string | null {
+  if (!value) return null;
+  const normalized = value
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\.\/+/, '')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '');
+  return normalized.length > 0 ? normalized : null;
+}
+
+function directoryExists(relPath: string): boolean {
+  try {
+    const stat = fs.statSync(path.resolve(root, relPath));
+    return stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function fileExists(relPath: string): boolean {
+  try {
+    const stat = fs.statSync(path.resolve(root, relPath));
+    return stat.isFile();
+  } catch {
+    return false;
+  }
+}
+
+function colorize(text: string, code: string): string {
+  if (!ANSI_ENABLED) return text;
+  return `\x1b[${code}m${text}\x1b[0m`;
+}
+
+function bold(text: string): string {
+  return colorize(text, '1');
+}
+
+function cyan(text: string): string {
+  return colorize(text, '36');
+}
+
+function green(text: string): string {
+  return colorize(text, '32');
+}
+
+function yellow(text: string): string {
+  return colorize(text, '33');
+}
+
+function dim(text: string): string {
+  return colorize(text, '2');
+}
+
+function printScanSettingsSummary(
+  includeGlobs: IncludeDetectionResult,
+  excludeGlobs: ExcludeDetectionResult,
+) {
+  const mode = includeGlobs.autoDetected ? 'AUTO-DETECTED' : 'DEFAULTS';
+  console.log(`\n${bold(cyan('Scan Settings Applied'))} ${dim(`[${mode}]`)}`);
+  console.log(dim('────────────────────────────────────────────'));
+
+  console.log(`${bold(green('Include globs'))}:`);
+  includeGlobs.values.forEach((value) => {
+    console.log(`  ${green('•')} ${value}`);
   });
+
+  console.log(`\n${bold(yellow('Exclude globs'))}:`);
+  excludeGlobs.values.forEach((value) => {
+    console.log(`  ${yellow('•')} ${value}`);
+  });
+
+  if (includeGlobs.autoDetected) {
+    console.log(`\n${bold('Detected from')}: ${includeGlobs.sources.join(', ')}`);
+  }
+  if (excludeGlobs.autoDetected) {
+    console.log(`${bold('Auto-added excludes')}:`);
+    excludeGlobs.sources.forEach((value) => {
+      console.log(`  ${yellow('•')} ${value}`);
+    });
+  }
+
+  console.log(`\n${dim(`Edit scan globs anytime in ${CONFIG_FILENAME}`)}`);
 }
