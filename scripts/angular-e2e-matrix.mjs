@@ -8,22 +8,18 @@ import { chromium } from 'playwright';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const workRoot = path.resolve(
-  process.env.LOCATOR_ANGULAR_E2E_ROOT ||
-    path.join(os.tmpdir(), 'ngx-locatorjs-angular-e2e'),
+  process.env.LOCATOR_ANGULAR_E2E_ROOT || path.join(os.tmpdir(), 'ngx-locatorjs-angular-e2e'),
 );
 const npmCache = path.join(workRoot, '.npm-cache');
 const resultsPath = path.join(workRoot, 'results.json');
 
-const versions = (process.argv.slice(2).length ? process.argv.slice(2) : [
-  '15.2.11',
-  '16.2.16',
-  '17.3.17',
-  '18.2.21',
-  '19.2.27',
-  '20.3.28',
-  '21.2.15',
-  '22.0.1',
-]).map((version) => version.trim()).filter(Boolean);
+const versions = (
+  process.argv.slice(2).length
+    ? process.argv.slice(2)
+    : ['15.2.11', '16.2.16', '17.3.17', '18.2.21', '19.2.27', '20.3.28', '21.2.15', '22.0.1']
+)
+  .map((version) => version.trim())
+  .filter(Boolean);
 
 function resolveBin(name) {
   const envName = `${name.toUpperCase()}_BIN`;
@@ -175,7 +171,8 @@ fs.appendFileSync(outputPath, JSON.stringify({
 
 function readRecorderEntries(outputPath) {
   if (!fs.existsSync(outputPath)) return [];
-  return fs.readFileSync(outputPath, 'utf8')
+  return fs
+    .readFileSync(outputPath, 'utf8')
     .split(/\r?\n/)
     .filter(Boolean)
     .map((line) => JSON.parse(line));
@@ -292,22 +289,31 @@ async function verifyBrowser(projectDir, version, port, recorderLogPath) {
 
     const beforeTemplate = readRecorderEntries(recorderLogPath).length;
     await page.mouse.click(x, y);
-    const templateEntry = await waitFor(() => {
-      const entries = readRecorderEntries(recorderLogPath);
-      return entries.length > beforeTemplate ? entries.at(-1) : null;
-    }, 10000, 'template open recorder entry');
+    const templateEntry = await waitFor(
+      () => {
+        const entries = readRecorderEntries(recorderLogPath);
+        return entries.length > beforeTemplate ? entries.at(-1) : null;
+      },
+      10000,
+      'template open recorder entry',
+    );
 
     const beforeComponent = readRecorderEntries(recorderLogPath).length;
     await page.keyboard.down('Shift');
     await page.mouse.click(x, y);
     await page.keyboard.up('Shift');
-    const componentEntry = await waitFor(() => {
-      const entries = readRecorderEntries(recorderLogPath);
-      return entries.length > beforeComponent ? entries.at(-1) : null;
-    }, 10000, 'component open recorder entry');
+    const componentEntry = await waitFor(
+      () => {
+        const entries = readRecorderEntries(recorderLogPath);
+        return entries.length > beforeComponent ? entries.at(-1) : null;
+      },
+      10000,
+      'component open recorder entry',
+    );
     await page.keyboard.up('Alt');
 
-    const expectedTemplate = Number(version.split('.')[0]) >= 20 ? 'app.html' : 'app.component.html';
+    const expectedTemplate =
+      Number(version.split('.')[0]) >= 20 ? 'app.html' : 'app.component.html';
     const expectedComponent = Number(version.split('.')[0]) >= 20 ? 'app.ts' : 'app.component.ts';
     if (!templateEntry.fileWithPos?.includes(expectedTemplate)) {
       throw new Error(
@@ -378,24 +384,30 @@ async function testVersion(version, tarballPath) {
     createRecorder(recorderPath, recorderLogPath);
 
     await step('create-project', async () => {
-      const create = await run(npxBin, [
-        '--yes',
-        `@angular/cli@${version}`,
-        'new',
-        projectName,
-        '--directory',
-        projectName,
-        '--skip-git',
-        '--skip-tests',
-        '--defaults',
-        '--package-manager',
-        'npm',
-      ], { cwd: workRoot });
+      const create = await run(
+        npxBin,
+        [
+          '--yes',
+          `@angular/cli@${version}`,
+          'new',
+          projectName,
+          '--directory',
+          projectName,
+          '--skip-git',
+          '--skip-tests',
+          '--defaults',
+          '--package-manager',
+          'npm',
+        ],
+        { cwd: workRoot },
+      );
       if (create.code !== 0) throw new Error(summarizeFailure(create));
     });
 
     await step('install-locator', async () => {
-      const install = await run(npmBin, ['install', '--save-dev', tarballPath], { cwd: projectDir });
+      const install = await run(npmBin, ['install', '--save-dev', tarballPath], {
+        cwd: projectDir,
+      });
       if (install.code !== 0) throw new Error(summarizeFailure(install));
     });
 
@@ -433,16 +445,20 @@ async function testVersion(version, tarballPath) {
     });
 
     await step('start-ng-serve', async () => {
-      serveProcess = spawnManaged(npxBin, [
-        'ng',
-        'serve',
-        '--proxy-config',
-        'ngx-locatorjs.proxy.cjs',
-        '--port',
-        String(appPort),
-        '--host',
-        '127.0.0.1',
-      ], { cwd: projectDir });
+      serveProcess = spawnManaged(
+        npxBin,
+        [
+          'ng',
+          'serve',
+          '--proxy-config',
+          'ngx-locatorjs.proxy.cjs',
+          '--port',
+          String(appPort),
+          '--host',
+          '127.0.0.1',
+        ],
+        { cwd: projectDir },
+      );
       await waitForHttpOk(`http://127.0.0.1:${appPort}`);
     });
 
@@ -472,13 +488,20 @@ console.log(`Work root: ${workRoot}`);
 const results = [];
 for (const version of versions) {
   results.push(await testVersion(version, tarballPath));
-  fs.writeFileSync(resultsPath, JSON.stringify({
-    generatedAt: new Date().toISOString(),
-    node: process.version,
-    workRoot,
-    tarballPath,
-    results,
-  }, null, 2));
+  fs.writeFileSync(
+    resultsPath,
+    JSON.stringify(
+      {
+        generatedAt: new Date().toISOString(),
+        node: process.version,
+        workRoot,
+        tarballPath,
+        results,
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 const failed = results.filter((result) => result.status !== 'passed');

@@ -20,19 +20,25 @@ const npxBin = resolveBin('npx');
 const packageManager = npmBin;
 const packageManagerName = 'npm';
 
-const versions = (process.argv.slice(2).length ? process.argv.slice(2) : [
-  '12.2.18',
-  '13.3.11',
-  '14.2.13',
-  '15.2.11',
-  '16.2.16',
-  '17.3.17',
-  '18.2.21',
-  '19.2.27',
-  '20.3.28',
-  '21.2.15',
-  '22.0.1',
-]).map((version) => version.trim()).filter(Boolean);
+const versions = (
+  process.argv.slice(2).length
+    ? process.argv.slice(2)
+    : [
+        '12.2.18',
+        '13.3.11',
+        '14.2.13',
+        '15.2.11',
+        '16.2.16',
+        '17.3.17',
+        '18.2.21',
+        '19.2.27',
+        '20.3.28',
+        '21.2.15',
+        '22.0.1',
+      ]
+)
+  .map((version) => version.trim())
+  .filter(Boolean);
 
 function run(command, args, options = {}) {
   const startedAt = Date.now();
@@ -87,9 +93,13 @@ async function packLocalPackage() {
   fs.mkdirSync(workRoot, { recursive: true });
   fs.mkdirSync(npmCache, { recursive: true });
 
-  const pack = await run(packageManager, ['--cache', npmCache, 'pack', '--pack-destination', workRoot], {
-    cwd: repoRoot,
-  });
+  const pack = await run(
+    packageManager,
+    ['--cache', npmCache, 'pack', '--pack-destination', workRoot],
+    {
+      cwd: repoRoot,
+    },
+  );
   if (pack.code !== 0) {
     throw new Error(`npm pack failed:\n${summarizeFailure(pack)}`);
   }
@@ -159,29 +169,35 @@ async function testVersion(cliVersion, tarballPath) {
     }
   }
 
-  const create = await step('create', npxBin, [
-    '--yes',
-    `@angular/cli@${cliVersion}`,
-    'new',
-    projectName,
-    '--directory',
-    projectName,
-    '--skip-git',
-    '--skip-tests',
-    '--defaults',
-    '--package-manager',
-    packageManagerName,
-  ], { cwd: workRoot });
+  const create = await step(
+    'create',
+    npxBin,
+    [
+      '--yes',
+      `@angular/cli@${cliVersion}`,
+      'new',
+      projectName,
+      '--directory',
+      projectName,
+      '--skip-git',
+      '--skip-tests',
+      '--defaults',
+      '--package-manager',
+      packageManagerName,
+    ],
+    { cwd: workRoot },
+  );
   if (create.code !== 0) {
     result.status = 'create_failed';
     return result;
   }
 
-  const installLocator = await step('install-locator', packageManager, [
-    'install',
-    '--save-dev',
-    tarballPath,
-  ], { cwd: projectDir });
+  const installLocator = await step(
+    'install-locator',
+    packageManager,
+    ['install', '--save-dev', tarballPath],
+    { cwd: projectDir },
+  );
   if (installLocator.code !== 0) {
     result.status = 'install_failed';
     return result;
@@ -241,13 +257,20 @@ for (const version of versions) {
 }
 
 const outFile = path.join(workRoot, 'results.json');
-fs.writeFileSync(outFile, JSON.stringify({
-  generatedAt: new Date().toISOString(),
-  node: process.version,
-  repoRoot,
-  tarballPath,
-  results,
-}, null, 2));
+fs.writeFileSync(
+  outFile,
+  JSON.stringify(
+    {
+      generatedAt: new Date().toISOString(),
+      node: process.version,
+      repoRoot,
+      tarballPath,
+      results,
+    },
+    null,
+    2,
+  ),
+);
 
 console.log('\nSummary');
 for (const result of results) {
