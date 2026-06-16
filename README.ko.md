@@ -12,9 +12,7 @@ Angular 인기가 적어서인지 [LocatorJs](https://www.locatorjs.com/)와 같
 
 **Angular 버전 지원**
 
-검증된 지원 범위: **Angular 15~22**
-
-이 범위는 Angular CLI로 생성한 실제 프로젝트에서 컴포넌트 스캔, 브라우저 hover 하이라이트/툴팁, Alt+클릭 템플릿 열기, Alt+Shift+클릭 컴포넌트 파일 열기까지 E2E로 검증합니다.
+지원 범위: **Angular 15~22**
 
 **필수 단계 (1~4 반드시 수행)**
 

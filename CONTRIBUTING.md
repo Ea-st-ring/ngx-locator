@@ -23,6 +23,7 @@ Run these before opening a PR:
 
 ```bash
 npm run build
+npm test
 npm run format:check
 ```
 
@@ -30,6 +31,12 @@ If formatting fails:
 
 ```bash
 npm run format
+```
+
+For Angular compatibility or runtime behavior changes, also run:
+
+```bash
+npm run test:angular:e2e
 ```
 
 ## Change Guidelines
