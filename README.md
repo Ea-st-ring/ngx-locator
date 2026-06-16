@@ -20,6 +20,10 @@ Inspired by [locatorjs.com](https://www.locatorjs.com/).
 - **Hold Alt**: highlight component + tooltip
 - Supports **Antigravity IDE**, **Cursor**, **Zed**, **VS Code**, **WebStorm**
 
+## Angular Version Support
+
+Tested support: **Angular 15–22**.
+
 ## Install
 
 ```bash

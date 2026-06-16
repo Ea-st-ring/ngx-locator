@@ -10,6 +10,10 @@ Angular 인기가 적어서인지 [LocatorJs](https://www.locatorjs.com/)와 같
 - Alt 키 홀드: 컴포넌트 하이라이트 + 툴팁 표시
 - Antigravity IDE, Cursor, Zed, VS Code, WebStorm 지원
 
+**Angular 버전 지원**
+
+지원 범위: **Angular 15~22**
+
 **필수 단계 (1~4 반드시 수행)**
 
 1. 패키지 설치: `npm i -D ngx-locatorjs`
