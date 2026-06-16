@@ -51,6 +51,7 @@
     "prepare": "npm run build",
     "test": "node --test",
     "test:ci": "npm run build && npm test",
+    "test:angular:e2e": "node scripts/angular-e2e-matrix.mjs",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "publish:github": "node scripts/publish-github.mjs"
@@ -61,6 +62,7 @@
   "devDependencies": {
     "@types/node": "^18.18.0",
     "oxfmt": "^0.35.0",
+    "playwright": "^1.61.0",
     "typescript": "^5.5.4"
   }
 }

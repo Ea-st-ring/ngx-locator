@@ -99,16 +99,29 @@ function extractTemplateUrl(node: ts.ObjectLiteralExpression): string | undefine
   return undefined;
 }
 
-function findComponentDecorator(node: ts.ClassDeclaration): ts.Decorator | undefined {
-  if (!node.modifiers) return undefined;
+function getDecorators(node: ts.Node): readonly ts.Decorator[] {
+  const modernTs = ts as typeof ts & {
+    canHaveDecorators?: (node: ts.Node) => boolean;
+    getDecorators?: (node: ts.Node) => readonly ts.Decorator[] | undefined;
+  };
 
-  for (const modifier of node.modifiers) {
-    if (ts.isDecorator(modifier)) {
-      const expr = modifier.expression;
-      if (ts.isCallExpression(expr) && ts.isIdentifier(expr.expression)) {
-        if (expr.expression.text === 'Component') {
-          return modifier;
-        }
+  if (modernTs.canHaveDecorators?.(node) && modernTs.getDecorators) {
+    return modernTs.getDecorators(node) ?? [];
+  }
+
+  const legacyNode = node as ts.Node & {
+    decorators?: ts.NodeArray<ts.Decorator>;
+    modifiers?: ts.NodeArray<ts.ModifierLike>;
+  };
+  return legacyNode.decorators ?? legacyNode.modifiers?.filter(ts.isDecorator) ?? [];
+}
+
+function findComponentDecorator(node: ts.ClassDeclaration): ts.Decorator | undefined {
+  for (const decorator of getDecorators(node)) {
+    const expr = decorator.expression;
+    if (ts.isCallExpression(expr) && ts.isIdentifier(expr.expression)) {
+      if (expr.expression.text === 'Component') {
+        return decorator;
       }
     }
   }

@@ -20,6 +20,12 @@ Inspired by [locatorjs.com](https://www.locatorjs.com/).
 - **Hold Alt**: highlight component + tooltip
 - Supports **Antigravity IDE**, **Cursor**, **Zed**, **VS Code**, **WebStorm**
 
+## Angular Version Support
+
+Tested support: **Angular 15–22**.
+
+The compatibility range is verified with generated Angular CLI projects and full browser E2E checks for component scanning, hover highlight/tooltip, Alt+click template opening, and Alt+Shift+click component opening.
+
 ## Install
 
 ```bash
