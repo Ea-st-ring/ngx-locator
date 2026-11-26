@@ -15,13 +15,6 @@ const root = process.cwd();
 const CONFIG_FILENAME = 'ngx-locatorjs.config.json';
 const configPath = path.resolve(root, CONFIG_FILENAME);
 
-if (!fs.existsSync(configPath)) {
-  console.log(`🚀 ${CONFIG_FILENAME} not found!`);
-  console.log('Please run: npx locatorjs-config');
-  console.log('Or manually create the config file.');
-  process.exit(1);
-}
-
 type ScanConfig = {
   includeGlobs?: string[];
   excludeGlobs?: string[];
@@ -48,7 +41,19 @@ const DEFAULT_INCLUDE_GLOBS = [
   'libs/**/*.{ts,tsx,js,jsx}',
 ];
 
-const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8')) as OpenInEditorConfig;
+// The config file is optional: every setting has a default.
+function readConfig(): OpenInEditorConfig {
+  if (!fs.existsSync(configPath)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(configPath, 'utf8')) as OpenInEditorConfig;
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error(`[file-opener] Invalid ${CONFIG_FILENAME}: ${message}`);
+    process.exit(1);
+  }
+}
+
+const cfg = readConfig();
 
 const WATCH_ENABLED = process.argv.includes('--watch') || process.argv.includes('-w');
 
@@ -61,21 +66,9 @@ const cfgHost = cfg.host?.trim();
 
 const PORT = Number(process.env.OPEN_IN_EDITOR_PORT || cfgPort || 4123);
 const HOST = process.env.OPEN_IN_EDITOR_HOST || cfgHost || '127.0.0.1';
-// Per-machine token written by locatorjs-config. It lives in the gitignored
-// .open-in-editor/ directory so the shared config file never contains a secret.
-const AUTH_TOKEN_PATH = path.resolve(root, '.open-in-editor/auth-token');
-
-function readAuthTokenFile(): string | null {
-  try {
-    return fs.readFileSync(AUTH_TOKEN_PATH, 'utf8').trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-// Same precedence as the generated proxy module: env > config (legacy) > token file.
-const AUTH_TOKEN =
-  (process.env.OPEN_IN_EDITOR_TOKEN || cfg.authToken || '').trim() || readAuthTokenFile();
+// Optional extra check, only when a token is set explicitly. Browser requests are already
+// protected by the required request header and the loopback-only CORS policy.
+const AUTH_TOKEN = (process.env.OPEN_IN_EDITOR_TOKEN || cfg.authToken || '').trim() || null;
 const WORKSPACE_ROOT = path.resolve(root, scanWorkspaceRoot);
 const MAP_PATH = path.resolve(root, '.open-in-editor/component-map.json');
 const SAFE_WATCH_DIR_NAMES = new Set(['node_modules', 'dist', '.git', '.angular', 'coverage']);
@@ -602,11 +595,10 @@ function hostnameOf(value: string | undefined): string | null {
 const BIND_IS_LOOPBACK = isLoopbackHostname(HOST);
 
 /**
- * Blocks requests a browser makes on behalf of another website.
- * The dev-server proxy injects the auth token, so a page on any site could otherwise
- * trigger opener routes through it (e.g. with an <img> tag). The proxy forwards the
- * browser's Sec-Fetch-Site / Origin / Referer headers, which identify such requests.
- * The Host check rejects DNS-rebinding requests when the opener only listens on loopback.
+ * Blocks requests a browser makes on behalf of another website, whether they reach the
+ * opener directly or through a dev-server proxy (which forwards the browser's
+ * Sec-Fetch-Site / Origin / Referer headers). The Host check rejects DNS-rebinding
+ * requests when the opener only listens on loopback.
  */
 function getRejectionReason(req: http.IncomingMessage): string | null {
   if (BIND_IS_LOOPBACK) {
@@ -621,6 +613,21 @@ function getRejectionReason(req: http.IncomingMessage): string | null {
   }
 
   return null;
+}
+
+/**
+ * Every request must carry this header. Pages cannot add it to <img>/<form>/navigation
+ * requests, and adding it with fetch() forces a CORS preflight, which the opener only
+ * approves for pages served from this machine. This replaces the old proxy-injected token.
+ */
+const REQUEST_HEADER = 'x-locatorjs-request';
+
+/** The request's Origin when it is a loopback page (e.g. http://localhost:4200). */
+function getAllowedCorsOrigin(req: http.IncomingMessage): string | null {
+  const origin = req.headers.origin;
+  if (typeof origin !== 'string') return null;
+  const hostname = hostnameOf(origin);
+  return hostname && isLoopbackHostname(hostname) ? origin : null;
 }
 
 function ensureAuthorized(req: http.IncomingMessage, url: URL): boolean {
@@ -691,20 +698,60 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method !== 'GET') {
-    res.statusCode = 405;
-    res.end('Method not allowed');
-    return;
-  }
-
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = url.pathname;
+  // Lets the browser runtime tell the opener apart from whatever else answers on a port.
+  res.setHeader('X-Locatorjs-Opener', '1');
 
   const rejectionReason = getRejectionReason(req);
   if (rejectionReason) {
     console.log(`[file-opener] Rejected ${pathname}: ${rejectionReason}`);
     res.statusCode = 403;
     res.end('Forbidden');
+    return;
+  }
+
+  // Lets the dev app (e.g. localhost:4200) call the opener directly, without a proxy.
+  const corsOrigin = getAllowedCorsOrigin(req);
+  if (corsOrigin) {
+    res.setHeader('Access-Control-Allow-Origin', corsOrigin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Expose-Headers', 'X-Locatorjs-Opener');
+  }
+
+  if (req.method === 'OPTIONS') {
+    if (!corsOrigin) {
+      console.log(
+        `[file-opener] Rejected preflight from ${req.headers.origin ?? 'unknown origin'}`,
+      );
+      res.statusCode = 403;
+      res.end('Forbidden');
+      return;
+    }
+    res.setHeader('Access-Control-Allow-Methods', 'GET');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      `${REQUEST_HEADER}, x-locatorjs-token, cache-control, pragma, expires`,
+    );
+    if (req.headers['access-control-request-private-network']) {
+      res.setHeader('Access-Control-Allow-Private-Network', 'true');
+    }
+    res.setHeader('Access-Control-Max-Age', '600');
+    res.statusCode = 204;
+    res.end();
+    return;
+  }
+
+  if (req.method !== 'GET') {
+    res.statusCode = 405;
+    res.end('Method not allowed');
+    return;
+  }
+
+  if (!req.headers[REQUEST_HEADER]) {
+    console.log(`[file-opener] Rejected ${pathname}: missing ${REQUEST_HEADER} header`);
+    res.statusCode = 403;
+    res.end(`Missing ${REQUEST_HEADER} header`);
     return;
   }
 
@@ -870,11 +917,10 @@ server
     console.log(` - fallback: ${describeEditor(FALLBACK_EDITOR)}`);
     console.log(` - workspace root: ${WORKSPACE_ROOT}`);
     if (AUTH_TOKEN) {
-      console.log(' - auth: enabled');
-    } else {
-      console.log(
-        ` - auth: disabled (no token in ${path.relative(root, AUTH_TOKEN_PATH)}, run locatorjs-config to create one)`,
-      );
+      console.log(' - auth token: required (OPEN_IN_EDITOR_TOKEN or authToken)');
+    }
+    if (!fs.existsSync(configPath)) {
+      console.log(` - config: defaults (no ${CONFIG_FILENAME})`);
     }
 
     if (AVAILABLE_EDITORS.length > 0) {
