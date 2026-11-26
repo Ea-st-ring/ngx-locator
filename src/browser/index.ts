@@ -379,10 +379,17 @@ function selectBestMatchingFile(candidates: string[]): string {
   return bestMatch;
 }
 
-/** True when the host element's tag is one of the selector's comma-separated parts. */
+/**
+ * True when the component's scanned selector matches its host element. Uses the DOM's own
+ * selector engine, so element, attribute (`[appCard]`), class, and `:not()` selectors work.
+ */
 function selectorMatchesHost(selector: string, hostElement: Element): boolean {
-  const tag = hostElement.tagName.toLowerCase();
-  return selector.split(',').some((part) => part.trim().toLowerCase() === tag);
+  try {
+    return hostElement.matches(selector);
+  } catch {
+    // Not valid CSS for the browser; treat as unknown.
+    return false;
+  }
 }
 
 function getComponentInfoByClassName(

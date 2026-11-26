@@ -316,3 +316,47 @@ browserTest('without debug info, same-named components are told apart by selecto
     );
   }
 });
+
+// Attribute selectors on plain <div> hosts: the tag alone cannot tell the two apart.
+const ATTRIBUTE_SELECTOR_PAGE = `<!doctype html>
+<html><body style="margin:0">
+<app-root style="display:block;padding:40px">
+  <div libcarda style="padding:20px;width:300px"><button id="a" style="width:120px;height:40px">A</button></div>
+  <div libcardb class="card" style="padding:20px;width:300px"><button id="b" style="width:120px;height:40px">B</button></div>
+</app-root>
+<script type="module">
+  const make = () => new (class CardComponent {})();
+  const hosts = new Map([[make(), document.querySelector('[libcarda]')], [make(), document.querySelector('[libcardb]')]]);
+  const app = {};
+  window.ng = {
+    getOwningComponent: (el) => [...hosts].find(([, host]) => host === el.parentElement)?.[0] ?? app,
+    getHostElement: (cmp) => hosts.get(cmp) ?? null,
+  };
+  const { installAngularLocator } = await import('/locator.js');
+  await installAngularLocator({ enableNetwork: true, showClickFeedback: false });
+  window.__locatorReady = true;
+</script>
+</body></html>`;
+
+browserTest(
+  'without debug info, attribute selectors tell same-named components apart',
+  async (t) => {
+    const map = sameNameMap(false);
+    // Angular selectors are case-insensitive for attributes, as in the DOM.
+    map.detailByFilePath['/w/libs/a/src/card.component.ts'].selector = '[libCardA]';
+    map.detailByFilePath['/w/libs/b/src/card.component.ts'].selector = 'div.card[libCardB]';
+    const { page, requests } = await openPage(t, {}, { page: ATTRIBUTE_SELECTOR_PAGE, map });
+
+    // B first: the URL heuristic alone would pick the first candidate (A).
+    for (const [index, lib] of ['b', 'a'].entries()) {
+      const box = await page.locator(`#${lib}`).boundingBox();
+      await page.keyboard.down('Alt');
+      await page.mouse.click(box.x + 10, box.y + 10);
+      await page.keyboard.up('Alt');
+      assert.equal(
+        (await waitForRequest(requests, index + 1)).file,
+        `/w/libs/${lib}/src/card.component.html`,
+      );
+    }
+  },
+);
