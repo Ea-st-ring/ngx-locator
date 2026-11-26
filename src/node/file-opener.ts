@@ -70,7 +70,8 @@ function checkEditorCLI(editorName: string, cliCommand = editorName) {
   if (editorCLICache[editorName] !== undefined) return editorCLICache[editorName];
 
   try {
-    childProcess.execSync(`which ${cliCommand}`, { stdio: 'ignore' });
+    const lookup = process.platform === 'win32' ? 'where' : 'which';
+    childProcess.execSync(`${lookup} ${cliCommand}`, { stdio: 'ignore' });
     editorCLICache[editorName] = true;
     console.log(`[file-opener] ${editorName} CLI found, using precise line navigation`);
   } catch {
@@ -108,80 +109,81 @@ const FALLBACK_EDITOR =
   AVAILABLE_EDITORS.find((editor) => editor.name !== DEFAULT_EDITOR)?.name ||
   'code';
 
-const COMMAND_TEMPLATES: Record<string, (file: string) => [string, string[]]> = {
-  antigravity: (file) => {
-    if (checkEditorCLI('antigravity')) {
-      return ['antigravity', ['--goto', file]];
-    }
-    const filePath = file.split(':')[0];
-    return ['open', ['-a', MAC_APP_NAMES.antigravity, filePath]];
-  },
+type FilePosition = { filePath: string; line: string; col: string };
 
-  cursor: (file) => {
-    if (checkEditorCLI('cursor')) {
-      return ['cursor', ['--goto', file]];
-    }
-    const filePath = file.split(':')[0];
-    return ['open', ['-a', MAC_APP_NAMES.cursor, filePath]];
-  },
+/**
+ * Builds the command for an editor. When the editor CLI is missing, macOS falls back to
+ * `open -a <App>`; other platforms still try the CLI name so the failure is reported
+ * (and the fallback editor is tried) instead of running a macOS-only command.
+ */
+function cliOrAppFallback(
+  editor: string,
+  pos: FilePosition,
+  buildCliArgs: (pos: FilePosition) => string[],
+): [string, string[]] {
+  if (checkEditorCLI(editor) || process.platform !== 'darwin') {
+    return [editor, buildCliArgs(pos)];
+  }
+  return ['open', ['-a', MAC_APP_NAMES[editor], pos.filePath]];
+}
 
-  code: (file) => {
-    if (checkEditorCLI('code')) {
-      return ['code', ['--goto', file]];
-    }
-    const filePath = file.split(':')[0];
-    return ['open', ['-a', MAC_APP_NAMES.code, filePath]];
-  },
+const gotoArgs = (pos: FilePosition) => ['--goto', `${pos.filePath}:${pos.line}:${pos.col}`];
 
-  zed: (file) => {
-    if (checkEditorCLI('zed')) {
-      return ['zed', [file]];
-    }
-    const filePath = file.split(':')[0];
-    return ['open', ['-a', MAC_APP_NAMES.zed, filePath]];
-  },
-
-  webstorm: (file) => {
-    if (checkEditorCLI('webstorm')) {
-      const [filePath, line, col] = file.split(':');
-      const args = [filePath];
-      if (line) args.push('--line', line);
-      if (col) args.push('--column', col);
-      return ['webstorm', args];
-    }
-    const filePath = file.split(':')[0];
-    return ['open', ['-a', MAC_APP_NAMES.webstorm, filePath]];
-  },
+const COMMAND_TEMPLATES: Record<string, (pos: FilePosition) => [string, string[]]> = {
+  antigravity: (pos) => cliOrAppFallback('antigravity', pos, gotoArgs),
+  cursor: (pos) => cliOrAppFallback('cursor', pos, gotoArgs),
+  code: (pos) => cliOrAppFallback('code', pos, gotoArgs),
+  zed: (pos) => cliOrAppFallback('zed', pos, (p) => [`${p.filePath}:${p.line}:${p.col}`]),
+  webstorm: (pos) =>
+    cliOrAppFallback('webstorm', pos, (p) => ['--line', p.line, '--column', p.col, p.filePath]),
 };
 
-function launchInEditor(fileWithPos: string, preferred = DEFAULT_EDITOR) {
+/**
+ * Spawns a detached process and resolves once it has actually started.
+ * `spawn` reports a missing executable (ENOENT) asynchronously through the `'error'` event,
+ * not by throwing, so a try/catch alone neither detects the failure nor prevents the
+ * unhandled `'error'` event from crashing the server.
+ */
+function spawnDetached(label: string, cmd: string, args: string[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    let child: childProcess.ChildProcess;
+    try {
+      child = childProcess.spawn(cmd, args, { stdio: 'ignore', detached: true });
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.log(`[file-opener] ${label} failed: ${message}`);
+      resolve(false);
+      return;
+    }
+    child.once('error', (e) => {
+      console.log(`[file-opener] ${label} failed: ${e.message}`);
+      resolve(false);
+    });
+    child.once('spawn', () => {
+      child.unref();
+      resolve(true);
+    });
+  });
+}
+
+async function launchInEditor(pos: FilePosition, preferred = DEFAULT_EDITOR): Promise<boolean> {
   if (process.env.EDITOR_CMD) {
     const [cmd, ...rest] = process.env.EDITOR_CMD.split(' ');
-    try {
-      childProcess.spawn(cmd, [...rest, fileWithPos], { stdio: 'ignore', detached: true }).unref();
-      return true;
-    } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : String(e);
-      console.log(`[file-opener] EDITOR_CMD failed: ${message}`);
-    }
+    const fileWithPos = `${pos.filePath}:${pos.line}:${pos.col}`;
+    if (await spawnDetached('EDITOR_CMD', cmd, [...rest, fileWithPos])) return true;
   }
 
-  const tryRun = (editor: string) => {
+  const tryRun = async (editor: string) => {
     const mk = COMMAND_TEMPLATES[editor];
     if (!mk) return false;
-    const [cmd, args] = mk(fileWithPos);
-    try {
-      childProcess.spawn(cmd, args, { stdio: 'ignore', detached: true }).unref();
-      return true;
-    } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : String(e);
-      console.log(`[file-opener] ${editor} failed: ${message}`);
-      return false;
-    }
+    const [cmd, args] = mk(pos);
+    return spawnDetached(editor, cmd, args);
   };
 
-  if (tryRun(preferred)) return true;
-  if (FALLBACK_EDITOR && tryRun(FALLBACK_EDITOR)) return true;
+  if (await tryRun(preferred)) return true;
+  if (FALLBACK_EDITOR && FALLBACK_EDITOR !== preferred && (await tryRun(FALLBACK_EDITOR))) {
+    return true;
+  }
 
   return false;
 }
@@ -419,6 +421,11 @@ function ensureAuthorized(req: http.IncomingMessage, url: URL): boolean {
   return safeCompareToken(token, AUTH_TOKEN);
 }
 
+function toPositiveIntString(value: string | null): string {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : '1';
+}
+
 function resolveAllowedFilePath(rawPath: string): string {
   const trimmed = rawPath.trim();
   if (!trimmed) {
@@ -451,7 +458,7 @@ function resolveAllowedFilePath(rawPath: string): string {
   return realPath;
 }
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   if (!req.url) {
     res.statusCode = 400;
     res.end('Bad request');
@@ -486,8 +493,8 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/__open-in-editor') {
     const file = url.searchParams.get('file');
-    const line = url.searchParams.get('line') || '1';
-    const col = url.searchParams.get('col') || '1';
+    const line = toPositiveIntString(url.searchParams.get('line'));
+    const col = toPositiveIntString(url.searchParams.get('col'));
 
     if (!file) {
       res.statusCode = 400;
@@ -507,8 +514,7 @@ const server = http.createServer((req, res) => {
 
     console.log(`[file-opener] Opening file: ${safePath}:${line}:${col}`);
 
-    const fileWithPos = `${safePath}:${line}:${col}`;
-    const ok = launchInEditor(fileWithPos);
+    const ok = await launchInEditor({ filePath: safePath, line, col });
 
     if (!ok) {
       res.statusCode = 500;
@@ -553,8 +559,7 @@ const server = http.createServer((req, res) => {
       }
       const bestLine = findBestLineInFile(safePath, searchTerms);
 
-      const fileWithPos = `${safePath}:${bestLine}:1`;
-      const ok = launchInEditor(fileWithPos);
+      const ok = await launchInEditor({ filePath: safePath, line: String(bestLine), col: '1' });
 
       if (!ok) {
         res.statusCode = 500;
