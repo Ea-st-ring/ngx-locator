@@ -66,6 +66,22 @@ test('a missing editor command returns 500 without crashing the server', async (
   assert.equal(second.status, 500);
 });
 
+test('search terms containing regex special characters find the right line', async (t) => {
+  const { request } = await startOpener(t, `${process.execPath} -e 0`);
+
+  const required = await request('/__open-in-editor-search', {
+    file: 'src/a.html',
+    search: JSON.stringify(['* required']),
+  });
+  assert.deepEqual(required, { status: 200, body: 'Opened at line 2' });
+
+  const cpp = await request('/__open-in-editor-search', {
+    file: 'src/a.html',
+    search: JSON.stringify(['C++ (beta']),
+  });
+  assert.deepEqual(cpp, { status: 200, body: 'Opened at line 3' });
+});
+
 test('files that do not exist are rejected with 403', async (t) => {
   const { request } = await startOpener(t, `${process.execPath} -e 0`);
 

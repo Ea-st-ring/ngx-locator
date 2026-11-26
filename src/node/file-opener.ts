@@ -205,7 +205,7 @@ function findBestLineInFile(filePath: string, searchTerms: string[]) {
           scores[lineIndex] += weight * 2;
 
           if (
-            new RegExp(`\\b${lowerTerm.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}\\b`).test(lowerLine)
+            new RegExp(`\\b${lowerTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(lowerLine)
           ) {
             scores[lineIndex] += weight * 3;
           }
