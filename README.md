@@ -5,270 +5,167 @@
 한국어 문서: [README.ko.md](README.ko.md)
 
 Angular doesn’t have many developer tools like LocatorJs, likely due to lower popularity, which has been inconvenient. So I built one together with CODEX.
-Open Angular component files directly from the browser with **Alt + Click** during development. This package provides:
-
-- Browser runtime for Alt+click / hover UI
-- CLI tools to scan Angular components and open files in your editor
-- Config + proxy setup guidance
+Open Angular component files directly from the browser with **Alt + Click** during development.
 
 Inspired by [locatorjs.com](https://www.locatorjs.com/).
 
 ## Features
 
-- **Alt + Click**: open template (.html)
-- **Alt + Shift + Click**: open component (.ts)
+- **Alt + Click**: open the template (.html) at the clicked element
+- **Alt + Shift + Click**: open the component (.ts) at the class
 - **Hold Alt**: highlight the component and the hovered element, with a tooltip showing the file that will open
 - Keys are configurable (see [Runtime Options](#runtime-options))
-- Supports **Antigravity IDE**, **Cursor**, **Zed**, **VS Code**, **WebStorm**
+- Supports **Cursor**, **VS Code**, **WebStorm**, **Zed**, **Antigravity**
 
-## Angular Version Support
+Tested with **Angular 15–22** in Chromium and WebKit (Safari's engine).
 
-Tested support: **Angular 15–22**.
+## Quick Start
 
-## Install
+1. Install:
 
-```bash
-npm i -D ngx-locatorjs
+   ```bash
+   npm i -D ngx-locatorjs
+   ```
+
+2. Add one line to the end of `src/main.ts`:
+
+   ```ts
+   import { isDevMode } from '@angular/core';
+
+   // ...your existing bootstrap code...
+
+   if (isDevMode()) import('ngx-locatorjs/auto');
+   ```
+
+3. Start the dev server through the locator:
+
+   ```bash
+   npx ngx-locatorjs -- ng serve
+   ```
+
+   Or keep your usual command and run `npx ngx-locatorjs` in a second terminal. To make it the default, set `"start": "ngx-locatorjs -- ng serve"` in `package.json`.
+
+That's it: no config file and no proxy. Hold **Alt** in the browser and click a component.
+
+## How It Works
+
+- **Browser runtime** (`ngx-locatorjs/auto`): finds the component under the cursor through Angular's dev-mode debug API and asks the opener to open its file.
+- **Opener** (`npx ngx-locatorjs`): a small local server on `http://127.0.0.1:4123` that launches your editor. The runtime calls it directly; it only answers pages served from this machine.
+
+How a component's file is found depends on the Angular version:
+
+| Angular | Matching                                                                                                                                                                                                                          |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 19+     | Exact file and class line from Angular's dev-mode debug info. Works even when several components share a class name. No scan.                                                                                                     |
+| 15–18   | A component map that `npx ngx-locatorjs` builds and keeps updated automatically. Same-named components are told apart by matching each selector (element, attribute, or class) against the host element, then by the current URL. |
+
+## CLI
+
+```text
+npx ngx-locatorjs [options]                 Start the opener
+npx ngx-locatorjs [options] -- <command>    Start the opener and run <command>; both stop together
+npx ngx-locatorjs init                      Create ngx-locatorjs.config.json (optional)
+npx ngx-locatorjs scan                      Build the component map once
+
+--scan / --no-scan   Force the component map on or off (default: on below Angular 19)
 ```
 
-## Required Steps (Do This First)
+The older commands (`locatorjs-config`, `locatorjs-open-in-editor`, `locatorjs-scan`) still work.
 
-You must complete steps 1–4 for this to work.
+## Editors
 
-1. Install the package: `npm i -D ngx-locatorjs`
-2. Generate config + proxy: `npx locatorjs-config`
-3. Add the runtime hook to `main.ts` (see the examples below)
-4. Run the file-opener server and your dev server (keep both running): `npx locatorjs-open-in-editor --watch` + `ng serve --proxy-config ngx-locatorjs.proxy.cjs`
+The opener uses `editor` from the config (default `cursor`, then `fallbackEditor`). On macOS the editor's CLI does not need to be on `PATH`: the CLI inside the app bundle or the app's URL scheme (`cursor://`, `vscode://`, `antigravity://`) is used for line navigation, and `open -a` as a last resort. The startup log shows which method each editor uses.
 
-If you are upgrading from an older version, run `npx locatorjs-config` again so the auth token and proxy headers are generated, then use `ngx-locatorjs.proxy.cjs` in your `--proxy-config` or `angular.json`.
+Override with environment variables:
 
-## Add to `main.ts`
-
-### NgModule bootstrap
-
-```ts
-import { platformBrowserDynamic } from '@angular/platform-browser-dynamic';
-import { AppModule } from './app/app.module';
-import { environment } from './environments/environment';
-import { enableProdMode } from '@angular/core';
-
-if (environment.production) {
-  enableProdMode();
-}
-
-platformBrowserDynamic()
-  .bootstrapModule(AppModule)
-  .then(() => {
-    if (!environment.production) {
-      setTimeout(() => {
-        import('ngx-locatorjs')
-          .then(
-            (m) => m.installAngularLocator({ enableNetwork: true }), // required for network access (localhost-only)
-          )
-          .catch((err) => console.warn('[angular-locator] Failed to load:', err));
-      }, 1000);
-    }
-  })
-  .catch((err) => console.error(err));
-```
-
-### Standalone bootstrap
-
-```ts
-import { bootstrapApplication } from '@angular/platform-browser';
-import { appConfig } from './app/app.config';
-import { AppComponent } from './app/app.component';
-
-bootstrapApplication(AppComponent, appConfig)
-  .then(() => {
-    setTimeout(() => {
-      import('ngx-locatorjs')
-        .then(
-          (m) => m.installAngularLocator({ enableNetwork: true }), // required for network access (localhost-only)
-        )
-        .catch((err) => console.warn('[angular-locator] Failed to load:', err));
-    }, 1000);
-  })
-  .catch((err) => console.error(err));
-```
+1. `EDITOR_CMD` (e.g. `cursor --goto`), receives `file:line:col`
+2. `LAUNCH_EDITOR` (e.g. `code`)
+3. `editor` in `ngx-locatorjs.config.json`
 
 ## Runtime Options
 
-Pass options to `installAngularLocator(...)`:
-
-| Option                              | Default   | Description                                                                                                                                 |
-| ----------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `enableNetwork`                     | `false`   | Required (`true`) to call the opener. Requests are limited to localhost.                                                                    |
-| `modifier`                          | `'alt'`   | Keys to hold for hover and click, joined with `+` (`'alt'`, `'ctrl+shift'`, `'meta+shift'`). Aliases: `option`, `control`, `cmd`/`command`. |
-| `componentModifier`                 | `'shift'` | Extra key that opens the `.ts` file instead of the template. `false` disables it. Must not overlap with `modifier`.                         |
-| `enableHover` / `enableClick`       | `true`    | Turn hover highlighting or click-to-open off.                                                                                               |
-| `showTooltip` / `showClickFeedback` | `true`    | Hide the hover tooltip or the "Opening…" toast.                                                                                             |
-| `debug`                             | `false`   | Log failures to the console.                                                                                                                |
+`ngx-locatorjs/auto` uses the defaults. To change them, call `installAngularLocator` instead:
 
 ```ts
-// Example: some Linux desktops use Alt+drag to move windows.
-m.installAngularLocator({ enableNetwork: true, modifier: 'ctrl+shift', componentModifier: 'alt' });
+if (isDevMode()) {
+  import('ngx-locatorjs').then((m) =>
+    m.installAngularLocator({
+      enableNetwork: true,
+      modifier: 'ctrl+shift',
+      componentModifier: 'alt',
+    }),
+  );
+}
 ```
 
-On macOS, Ctrl+click opens the context menu; the locator handles it, so `ctrl` modifiers work there too.
+| Option                              | Default                   | Description                                                                                                                                 |
+| ----------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enableNetwork`                     | `false` (`true` in auto)  | Required (`true`) to call the opener. Requests are limited to localhost.                                                                    |
+| `openerUrl`                         | `'http://127.0.0.1:4123'` | Where the opener listens. Change it with the opener's `port`. `false` uses only the proxy routes in `endpoints`.                            |
+| `modifier`                          | `'alt'`                   | Keys to hold for hover and click, joined with `+` (`'alt'`, `'ctrl+shift'`, `'meta+shift'`). Aliases: `option`, `control`, `cmd`/`command`. |
+| `componentModifier`                 | `'shift'`                 | Extra key that opens the `.ts` file instead of the template. `false` disables it. Must not overlap with `modifier`.                         |
+| `enableHover` / `enableClick`       | `true`                    | Turn hover highlighting or click-to-open off.                                                                                               |
+| `showTooltip` / `showClickFeedback` | `true`                    | Hide the hover tooltip or the "Opening…" toast.                                                                                             |
+| `debug`                             | `false`                   | Log failures to the console.                                                                                                                |
 
-## Config Guide (`ngx-locatorjs.config.json`)
+Some Linux desktops use Alt+drag to move windows; pick another `modifier` there. On macOS, Ctrl+click opens the context menu; the locator handles it, so `ctrl` modifiers work too.
 
-Location: project root
+## Config (Optional)
 
-**Important**
-
-- `npx locatorjs-config` uses the **current directory** as the base.
-- Defaults: `host: "127.0.0.1"`, `port: 4123`, `workspaceRoot: "."`.
-- In a monorepo, update `workspaceRoot` to the **relative path** of your Angular app (e.g. `apps/web`).
-- If `.gitignore` exists, `npx locatorjs-config` will append `.open-in-editor/`. Remove it if you want to commit the map (the auth token stays ignored via `.open-in-editor/.gitignore`).
-
-Example:
+Everything has a default. Create `ngx-locatorjs.config.json` in the project root (by hand or with `npx ngx-locatorjs init`) only to change something:
 
 ```json
 {
-  "host": "127.0.0.1",
   "port": 4123,
+  "host": "127.0.0.1",
   "workspaceRoot": ".",
   "editor": "cursor",
   "fallbackEditor": "code",
   "scan": {
-    "includeGlobs": [
-      "src/**/*.{ts,tsx,js,jsx}",
-      "projects/**/*.{ts,tsx,js,jsx}",
-      "apps/**/*.{ts,tsx,js,jsx}",
-      "libs/**/*.{ts,tsx,js,jsx}"
-    ],
-    "excludeGlobs": [
-      "**/node_modules/**",
-      "**/dist/**",
-      "**/.angular/**",
-      "**/coverage/**",
-      "**/*.spec.{ts,tsx,js,jsx}",
-      "**/*.test.{ts,tsx,js,jsx}",
-      "**/*.e2e.{ts,tsx,js,jsx}"
-    ]
+    "includeGlobs": ["src/**/*.{ts,tsx,js,jsx}"],
+    "excludeGlobs": ["**/node_modules/**", "**/*.spec.{ts,tsx,js,jsx}"]
   }
 }
 ```
 
-### Field Reference
+- `port` / `host`: where the opener listens. If you change `port`, also set `openerUrl` in the runtime options.
+- `workspaceRoot`: the Angular app root, relative to where you run the command (e.g. `apps/web` in a monorepo). The opener only opens files inside it.
+- `editor` / `fallbackEditor`: `cursor`, `code`, `webstorm`, `zed`, `antigravity`.
+- `scan.includeGlobs` / `scan.excludeGlobs`: files scanned for the component map (Angular 15–18). Examples: `"src/app/**/*.ts"`; Nx: `"apps/**/*.ts", "libs/**/*.ts"`.
 
-- `port`: Port for the local file-opener server.
-- `host`: Bind address for the file-opener server. Keep `127.0.0.1` for local-only access.
-- `workspaceRoot`: Angular workspace root path (relative to where you run commands).
-- `editor`: Preferred editor (`cursor`, `code`, `webstorm`).
-- `fallbackEditor`: Fallback editor if the preferred editor cannot be launched.
-- `authToken` (legacy, optional): Overrides the token in `.open-in-editor/auth-token`. Not written by `locatorjs-config` anymore; avoid committing it.
-- `scan.includeGlobs`: Globs used to find component source files.
-- `scan.excludeGlobs`: Globs excluded from component scanning.
+The component map is written to `.open-in-editor/` (add it to `.gitignore`).
 
-### Auth Token & Request Protection
+## Using a Dev-Server Proxy
 
-- `locatorjs-config` generates a per-machine token in `.open-in-editor/auth-token` (gitignored), so `ngx-locatorjs.config.json` contains no secret and can be committed and shared.
-- Teammates using a shared config: run `npx locatorjs-config` and answer `N` to keep the config; it only creates the local token.
-- Token precedence (opener and proxy): `OPEN_IN_EDITOR_TOKEN` env > `authToken` in config (legacy) > `.open-in-editor/auth-token`.
-- `ngx-locatorjs.proxy.cjs` reads that token and forwards it as `x-locatorjs-token` to opener routes.
-- Because the proxy adds the token for every request, the opener also rejects requests a browser makes on behalf of another website (`Sec-Fetch-Site: cross-site` from a non-localhost origin) and requests whose `Host` is not a loopback address while it listens on loopback (DNS rebinding).
-- If you run `ng serve --host 0.0.0.0`, anyone who can reach the dev server can use the opener routes through the proxy. Only do this on trusted networks.
-- If you skip Angular proxy and call opener endpoints directly, pass `authToken` to `installAngularLocator(...)` so requests are authorized.
-- If token mismatch occurs (`401 Unauthorized`), regenerate config/proxy: `npx locatorjs-config`.
+Not needed for the usual setup. Use it when the browser cannot reach `127.0.0.1:4123` directly, for example when you open the app from another device through `ng serve --host 0.0.0.0`.
 
-### Auto Scan Scope Discovery (0.5.0)
+`npx locatorjs-config` writes `ngx-locatorjs.proxy.cjs`; run `ng serve --proxy-config ngx-locatorjs.proxy.cjs`. The runtime tries the opener directly first and falls back to the proxy routes automatically. An existing proxy file referenced by `angular.json` is never overwritten: merge the generated entries into it.
 
-- `locatorjs-config` now auto-detects scan roots.
-- Generated defaults now include `ts/tsx/js/jsx`.
-- You can always edit the generated `scan.includeGlobs` / `scan.excludeGlobs` manually.
+## Security
 
-### Example includeGlobs
+- The opener binds to `127.0.0.1` and opens files only inside `workspaceRoot`.
+- Every request must carry an `x-locatorjs-request` header. Other websites cannot add it to `<img>`, form, or link requests, and adding it with `fetch` needs a CORS preflight that the opener approves only for pages served from this machine.
+- Requests marked cross-site by the browser and requests with a non-loopback `Host` header (DNS rebinding) are rejected, also when they come through a proxy.
+- With `ng serve --host 0.0.0.0` and the proxy, anyone who can reach the dev server can use the opener routes. Do this only on trusted networks.
+- An extra token is optional: set `OPEN_IN_EDITOR_TOKEN` (or `authToken` in the config) and pass the same `authToken` to `installAngularLocator`.
 
-- Simple app: `"src/app/**/*.ts"`
-- Angular workspace: `"projects/**/*.{ts,tsx,js,jsx}"`
-- Nx: `"apps/**/*.{ts,tsx,js,jsx}", "libs/**/*.{ts,tsx,js,jsx}"`
+## Upgrading from 0.5.x
 
-## Proxy (`ngx-locatorjs.proxy.cjs`)
-
-Generated by `npx locatorjs-config`. This dynamic proxy module reads `ngx-locatorjs.config.json` at runtime, so changing `port` in config updates proxy target automatically.
-
-Example:
-
-```js
-module.exports = {
-  '/__open-in-editor': { target, secure: false, changeOrigin: true, headers },
-  '/__open-in-editor-search': { target, secure: false, changeOrigin: true, headers },
-  '/__cmp-map': { target, secure: false, changeOrigin: true, headers },
-};
-```
-
-## Environment Variable Priority
-
-1. `EDITOR_CMD` (example: `cursor --goto`)
-2. `LAUNCH_EDITOR` (example: `code`)
-3. `ngx-locatorjs.config.json` → `editor`
-4. auto-detected editor
+- Replace the `main.ts` snippet with `if (isDevMode()) import('ngx-locatorjs/auto');`, or keep your `installAngularLocator({ enableNetwork: true })` call; it now connects directly.
+- Run `npx ngx-locatorjs` instead of `locatorjs-open-in-editor`. The proxy and `.open-in-editor/auth-token` are no longer needed; the generated proxy still works if you keep it.
+- If you passed `endpoints` to `installAngularLocator`, the runtime keeps using those proxy routes. Remove `endpoints` (or set `openerUrl`) to connect directly.
 
 ## Troubleshooting
 
-- **CORS / JSON parse error**: ensure dev server uses `--proxy-config ngx-locatorjs.proxy.cjs`
-- **npm run shows "Unknown cli config --proxy-config"**: use `npm run start -- --proxy-config ngx-locatorjs.proxy.cjs`
-- **Network disabled**: pass `enableNetwork: true` to `installAngularLocator`
-- **component-map.json not found**: run `npx locatorjs-scan`
-- **Component changes not reflected**: run `npx locatorjs-open-in-editor --watch` or re-run `npx locatorjs-scan`
-- **Map is empty or missing components**: check `scan.includeGlobs` and rerun the scan
-- **Wrong files open or nothing matches**: confirm `workspaceRoot` points to the actual Angular app root
-- **No highlight / info is null**: make sure `http://localhost:${port}/__cmp-map` is loading and includes your component class name
-- **Port conflict**: change `port` in `ngx-locatorjs.config.json` only
-- **401 Unauthorized from opener routes**: create the local token (`npx locatorjs-config`, answer `N` to keep an existing config) and restart the dev server or pass `authToken` to `installAngularLocator` if you call the opener without Angular proxy headers
-
-## Notes
-
-- Use only in development (guard with `environment.production`).
-- Network requests are opt-in and limited to localhost. Set `enableNetwork: true` to activate.
-- Opener server accepts files only inside `workspaceRoot` and binds to loopback by default.
-
-## One-Command Dev (Recommended)
-
-Running the file-opener server and Angular dev server separately is tedious. You can wire them into a single script.
-
-### `npm-run-all`
-
-```bash
-npm i -D npm-run-all
-```
-
-```json
-{
-  "scripts": {
-    "locator:opener": "npx locatorjs-open-in-editor",
-    "dev:app": "ng serve --proxy-config ngx-locatorjs.proxy.cjs",
-    "dev:locator": "run-p locator:opener dev:app"
-  }
-}
-```
-
-## What It Can Do
-
-- Open template or component files with Alt+click in development
-- Show component highlight and tooltip while holding Alt
-- Works with single apps, Angular workspace, and Nx layouts
-
-### How components are matched
-
-| Angular | Matching                                                                                                                                                                                             |
-| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 19+     | Exact file and class line from Angular's dev-mode debug info. Works even when several components share a class name; no scan needed for these components.                                            |
-| 15–18   | Component map from `locatorjs-scan`, by class name. Same-named components are told apart by matching each selector (element, attribute, or class) against the host element, then by the current URL. |
+- **Nothing happens on Alt+click**: check that `npx ngx-locatorjs` is running and that `main.ts` imports `ngx-locatorjs/auto` in dev mode. Set `debug: true` to see errors in the console.
+- **"Missing x-locatorjs-request header" (403)**: something calls the opener without the runtime, or the runtime and opener versions differ. Update both.
+- **Port 4123 is taken**: set `port` in the config and the same `openerUrl` in the runtime options.
+- **Wrong file opens (Angular 15–18)**: two components share both class name and selector. Upgrade to Angular 19+ for exact matching, or rename one.
+- **Component changes not found (Angular 15–18)**: keep `npx ngx-locatorjs` running (it watches), or run `npx ngx-locatorjs scan`.
+- **Editor opens without jumping to the line**: the startup log shows the launch method; install the editor's CLI or set `EDITOR_CMD`.
+- **Files outside the app are refused**: set `workspaceRoot`.
 
 ## Limitations
 
-- Not supported in SSR/SSG runtime (browser DOM only)
-- Angular 15–18: keep the map up to date (`npx locatorjs-open-in-editor --watch` or `npx locatorjs-scan`)
-
-## Maintainer Note (Setup UX)
-
-Current setup works, but the first-time flow still feels too manual. You install, run
-`npx locatorjs-config`, add the bootstrap hook in `main.ts`, and then run opener + dev server
-with proxy config.
-
-This is an area we want to keep improving. Contributions that reduce setup friction are welcome,
-especially around safer automation, clearer defaults, and better error guidance.
+- Development only: it relies on Angular's dev-mode debug API.
+- Not supported in SSR/SSG runtime (browser DOM only).
