@@ -171,6 +171,9 @@ browserTest('a non-opener server on the opener port is skipped for the proxy rou
           up.pipe(res);
         },
       );
+      // The browser may drop a request while the test tears down; don't crash the test on it.
+      upstream.on('error', () => res.destroy());
+      req.on('error', () => upstream.destroy());
       return req.pipe(upstream);
     }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
