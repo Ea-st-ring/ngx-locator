@@ -6,6 +6,7 @@ import http from 'http';
 import { spawn } from 'child_process';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
+import { parseComponentSource } from './component-source.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -515,6 +516,22 @@ function resolveAllowedFilePath(rawPath: string): string {
   return realPath;
 }
 
+/**
+ * Resolves a component source path reported by the browser. Angular's class debug info
+ * gives paths relative to the TypeScript root, which is usually the directory the
+ * opener runs in, so both that and workspaceRoot are tried.
+ */
+function resolveComponentSourcePath(rawPath: string): string {
+  const trimmed = rawPath.trim();
+  if (trimmed && !path.isAbsolute(trimmed)) {
+    for (const base of [WORKSPACE_ROOT, root]) {
+      const candidate = path.resolve(base, trimmed);
+      if (fs.existsSync(candidate)) return resolveAllowedFilePath(candidate);
+    }
+  }
+  return resolveAllowedFilePath(trimmed);
+}
+
 const server = http.createServer(async (req, res) => {
   if (!req.url) {
     res.statusCode = 400;
@@ -639,6 +656,45 @@ const server = http.createServer(async (req, res) => {
       res.statusCode = 500;
       res.end('Search failed: ' + message);
     }
+    return;
+  }
+
+  if (pathname === '/__open-in-editor-resolve') {
+    const file = url.searchParams.get('file');
+    const className = url.searchParams.get('className');
+    if (!file || !className) {
+      res.statusCode = 400;
+      res.end('file and className are required');
+      return;
+    }
+
+    let safePath: string;
+    try {
+      safePath = resolveComponentSourcePath(file);
+    } catch (error: unknown) {
+      res.statusCode = 403;
+      res.end(error instanceof Error ? error.message : 'invalid file');
+      return;
+    }
+
+    const match = parseComponentSource(safePath, fs.readFileSync(safePath, 'utf8')).find(
+      (component) => component.className === className,
+    );
+    if (!match) {
+      res.statusCode = 404;
+      res.end('component not found in file');
+      return;
+    }
+
+    res.setHeader('Content-Type', 'application/json');
+    res.end(
+      JSON.stringify({
+        className: match.className,
+        filePath: match.filePath,
+        templateUrl: match.templateUrl ?? null,
+        line: match.line,
+      }),
+    );
     return;
   }
 

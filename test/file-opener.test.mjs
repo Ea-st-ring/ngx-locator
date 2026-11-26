@@ -6,6 +6,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { distNode, getFreePort, makeTempDir, waitForOutput } from './helpers.mjs';
 
+const CARD_SOURCE = [
+  "import { Component } from '@angular/core';",
+  '',
+  "@Component({ selector: 'app-card', templateUrl: `./a.html` })",
+  'export class CardComponent {}',
+  '',
+  "@Component({ selector: 'app-inline', template: '<p>hi</p>' })",
+  'export class InlineComponent {}',
+  '',
+].join('\n');
+
 const TEMPLATE = ['<h1>title</h1>', '<p>* required</p>', '<span>C++ (beta</span>', ''].join('\n');
 
 /**
@@ -16,6 +27,7 @@ async function startOpener(t, editorCmd, { authToken } = {}) {
   const workspace = makeTempDir('opener');
   fs.mkdirSync(path.join(workspace, 'src'));
   fs.writeFileSync(path.join(workspace, 'src', 'a.html'), TEMPLATE);
+  fs.writeFileSync(path.join(workspace, 'src', 'card.component.ts'), CARD_SOURCE);
 
   if (authToken) {
     fs.mkdirSync(path.join(workspace, '.open-in-editor'));
@@ -133,4 +145,37 @@ test('the auth token is read from .open-in-editor/auth-token', async (t) => {
     { 'x-locatorjs-token': 'secret-1' },
   );
   assert.equal(withToken.status, 200);
+});
+
+test('resolve returns the component files for a debug-info path and class name', async (t) => {
+  const { request } = await startOpener(t, `${process.execPath} -e 0`);
+
+  const card = await request('/__open-in-editor-resolve', {
+    file: 'src/card.component.ts',
+    className: 'CardComponent',
+  });
+  assert.equal(card.status, 200);
+  const body = JSON.parse(card.body);
+  assert.equal(body.className, 'CardComponent');
+  assert.match(body.filePath, /src[\\/]card\.component\.ts$/);
+  assert.match(body.templateUrl, /src[\\/]a\.html$/);
+  assert.equal(body.line, 4);
+
+  const inline = await request('/__open-in-editor-resolve', {
+    file: 'src/card.component.ts',
+    className: 'InlineComponent',
+  });
+  assert.equal(JSON.parse(inline.body).templateUrl, null);
+
+  const unknown = await request('/__open-in-editor-resolve', {
+    file: 'src/card.component.ts',
+    className: 'MissingComponent',
+  });
+  assert.equal(unknown.status, 404);
+
+  const outside = await request('/__open-in-editor-resolve', {
+    file: process.execPath,
+    className: 'CardComponent',
+  });
+  assert.equal(outside.status, 403);
 });
