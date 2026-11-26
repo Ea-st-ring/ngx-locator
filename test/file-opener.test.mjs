@@ -120,3 +120,17 @@ test('requests with a non-loopback Host header are rejected (DNS rebinding)', as
   const res = await request('/__cmp-map', {}, { host: 'rebind.evil.example:4123' });
   assert.equal(res.status, 403);
 });
+
+test('the auth token is read from .open-in-editor/auth-token', async (t) => {
+  const { request } = await startOpener(t, `${process.execPath} -e 0`, { authToken: 'secret-1' });
+
+  const withoutToken = await request('/__open-in-editor', { file: 'src/a.html' });
+  assert.equal(withoutToken.status, 401);
+
+  const withToken = await request(
+    '/__open-in-editor',
+    { file: 'src/a.html' },
+    { 'x-locatorjs-token': 'secret-1' },
+  );
+  assert.equal(withToken.status, 200);
+});

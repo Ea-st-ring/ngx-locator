@@ -60,7 +60,21 @@ const cfgHost = cfg.host?.trim();
 
 const PORT = Number(process.env.OPEN_IN_EDITOR_PORT || cfgPort || 4123);
 const HOST = process.env.OPEN_IN_EDITOR_HOST || cfgHost || '127.0.0.1';
-const AUTH_TOKEN = (process.env.OPEN_IN_EDITOR_TOKEN || cfg.authToken || '').trim() || null;
+// Per-machine token written by locatorjs-config. It lives in the gitignored
+// .open-in-editor/ directory so the shared config file never contains a secret.
+const AUTH_TOKEN_PATH = path.resolve(root, '.open-in-editor/auth-token');
+
+function readAuthTokenFile(): string | null {
+  try {
+    return fs.readFileSync(AUTH_TOKEN_PATH, 'utf8').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+// Same precedence as the generated proxy module: env > config (legacy) > token file.
+const AUTH_TOKEN =
+  (process.env.OPEN_IN_EDITOR_TOKEN || cfg.authToken || '').trim() || readAuthTokenFile();
 const WORKSPACE_ROOT = path.resolve(root, scanWorkspaceRoot);
 const MAP_PATH = path.resolve(root, '.open-in-editor/component-map.json');
 const SAFE_WATCH_DIR_NAMES = new Set(['node_modules', 'dist', '.git', '.angular', 'coverage']);
@@ -641,7 +655,9 @@ server
     if (AUTH_TOKEN) {
       console.log(' - auth: enabled');
     } else {
-      console.log(' - auth: disabled (legacy config, run locatorjs-config to enable)');
+      console.log(
+        ` - auth: disabled (no token in ${path.relative(root, AUTH_TOKEN_PATH)}, run locatorjs-config to create one)`,
+      );
     }
 
     if (AVAILABLE_EDITORS.length > 0) {
