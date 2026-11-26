@@ -24,10 +24,11 @@ function makeWorkspace(t, proxyConfig) {
 }
 
 /** Runs locatorjs-config non-interactively, answering each prompt in order. */
-function runSetup(workspace, answers) {
+function runSetup(workspace, answers, { args = [], env = {} } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [path.join(distNode, 'config-setup.js')], {
+    const child = spawn(process.execPath, [path.join(distNode, 'config-setup.js'), ...args], {
       cwd: workspace,
+      env: { ...process.env, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let output = '';
@@ -75,50 +76,41 @@ test('a previously generated proxy referenced by angular.json is regenerated in 
   assert.doesNotMatch(fs.readFileSync(generatedPath, 'utf8'), /stale/);
 });
 
-test('the auth token is written to a gitignored file instead of the shared config', async (t) => {
+test('the generated proxy forwards only an explicitly configured token', async (t) => {
   const workspace = makeWorkspace(t, GENERATED_PROXY);
 
   const { code, output } = await runSetup(workspace, ['1']);
   assert.equal(code, 0, output);
-
   const config = JSON.parse(
     fs.readFileSync(path.join(workspace, 'ngx-locatorjs.config.json'), 'utf8'),
   );
   assert.equal(config.authToken, undefined);
+  assert.equal(fs.existsSync(path.join(workspace, '.open-in-editor', 'auth-token')), false);
 
-  const token = fs
-    .readFileSync(path.join(workspace, '.open-in-editor', 'auth-token'), 'utf8')
-    .trim();
-  assert.match(token, /^[0-9a-f]{48}$/);
-  const nestedIgnore = fs.readFileSync(
-    path.join(workspace, '.open-in-editor', '.gitignore'),
-    'utf8',
-  );
-  assert.match(nestedIgnore, /^auth-token$/m);
-
-  // The generated proxy module must forward the same token.
-  const headers = JSON.parse(
-    execFileSync(
-      process.execPath,
-      ['-e', `console.log(JSON.stringify(require('./${GENERATED_PROXY}')['/__cmp-map'].headers))`],
-      { cwd: workspace, encoding: 'utf8' },
-    ),
-  );
-  assert.deepEqual(headers, { 'x-locatorjs-token': token });
+  const proxyHeaders = (env) =>
+    JSON.parse(
+      execFileSync(
+        process.execPath,
+        [
+          '-e',
+          `console.log(JSON.stringify(require('./${GENERATED_PROXY}')['/__cmp-map'].headers))`,
+        ],
+        { cwd: workspace, encoding: 'utf8', env: { ...process.env, ...env } },
+      ),
+    );
+  assert.deepEqual(proxyHeaders({ OPEN_IN_EDITOR_TOKEN: '' }), {});
+  assert.deepEqual(proxyHeaders({ OPEN_IN_EDITOR_TOKEN: 'secret-1' }), {
+    'x-locatorjs-token': 'secret-1',
+  });
 });
 
-test('declining to overwrite a shared config still creates a local auth token', async (t) => {
-  const workspace = makeWorkspace(t, GENERATED_PROXY);
-  fs.writeFileSync(
-    path.join(workspace, 'ngx-locatorjs.config.json'),
-    JSON.stringify({ port: 4123 }),
-  );
+test('init (--no-proxy) writes only the config, never a proxy module', async (t) => {
+  const workspace = makeWorkspace(t, 'proxy.conf.js');
 
-  const { code, output } = await runSetup(workspace, ['n']);
+  const { code, output } = await runSetup(workspace, ['1'], { args: ['--no-proxy'] });
   assert.equal(code, 0, output);
-  assert.ok(fs.existsSync(path.join(workspace, '.open-in-editor', 'auth-token')));
-  assert.deepEqual(
-    JSON.parse(fs.readFileSync(path.join(workspace, 'ngx-locatorjs.config.json'), 'utf8')),
-    { port: 4123 },
-  );
+  assert.ok(fs.existsSync(path.join(workspace, 'ngx-locatorjs.config.json')));
+  assert.equal(fs.existsSync(path.join(workspace, GENERATED_PROXY)), false);
+  assert.equal(fs.existsSync(path.join(workspace, 'proxy.conf.js')), false);
+  assert.match(output, /npx ngx-locatorjs -- ng serve/);
 });

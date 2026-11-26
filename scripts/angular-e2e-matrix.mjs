@@ -262,7 +262,10 @@ async function verifyBrowser(projectDir, version, port, recorderLogPath) {
     );
     await page.waitForFunction(
       async () => {
-        const res = await fetch('/__cmp-map?t=' + Date.now(), { cache: 'no-store' });
+        const res = await fetch('/__cmp-map?t=' + Date.now(), {
+          cache: 'no-store',
+          headers: { 'x-locatorjs-request': '1' },
+        });
         if (!res.ok) return false;
         const map = await res.json();
         return Object.keys(map.detailByFilePath || {}).length > 0;

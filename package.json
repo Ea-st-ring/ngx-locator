@@ -22,7 +22,8 @@
   "bin": {
     "locatorjs-config": "dist/node/config-setup.js",
     "locatorjs-open-in-editor": "dist/node/file-opener.js",
-    "locatorjs-scan": "dist/node/cmp-scan.js"
+    "locatorjs-scan": "dist/node/cmp-scan.js",
+    "ngx-locatorjs": "dist/node/cli.js"
   },
   "files": [
     "dist",
