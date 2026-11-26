@@ -154,6 +154,9 @@ async function ensureMap(forceRefresh = false): Promise<CmpMap> {
   );
 
   const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Component map request failed (HTTP ${res.status}): ${text.substring(0, 100)}`);
+  }
 
   try {
     CMP_MAP = normalizeMap(JSON.parse(text));
@@ -298,19 +301,25 @@ function getNearestComponent(el: Element): LocatorComponent | null {
   };
 }
 
+/**
+ * Sends an open request and throws on network errors and non-2xx responses,
+ * so callers can react (e.g. refresh a stale component map).
+ */
+async function requestOpen(url: string) {
+  const res = await fetch(url, { headers: getAuthHeaders() });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Open request failed (HTTP ${res.status}): ${body}`);
+  }
+}
+
 async function openFile(absPath: string, line = 1, col = 1) {
   const url = attachAuthToken(
     assertNetworkAllowed(
       `${OPTIONS.endpoints.openInEditor}?file=${encodeURIComponent(absPath)}&line=${line}&col=${col}`,
     ),
   );
-  try {
-    await fetch(url, { headers: getAuthHeaders() });
-  } catch (e) {
-    if (OPTIONS.debug) {
-      console.warn(e);
-    }
-  }
+  await requestOpen(url);
 }
 
 async function openFileWithSearch(absPath: string, searchTerms: string[]) {
@@ -322,10 +331,10 @@ async function openFileWithSearch(absPath: string, searchTerms: string[]) {
     ),
   );
   try {
-    await fetch(url, { headers: getAuthHeaders() });
+    await requestOpen(url);
   } catch (e) {
     if (OPTIONS.debug) {
-      console.warn('[angular-locator] Search failed:', e);
+      console.warn('[angular-locator] Search failed, opening without search:', e);
     }
     await openFile(absPath);
   }
@@ -493,13 +502,20 @@ async function handleAltOpen(ev: MouseEvent | PointerEvent, el: Element) {
 
     if (newInfo) {
       showClickFeedback(ev.clientX, ev.clientY, 'Retrying with updated map...');
-      if (ev.shiftKey) {
-        await openFile(newInfo.filePath);
-      } else if (newInfo.templateUrl) {
-        const position = findTemplatePosition(el, el);
-        await openFileWithSearch(newInfo.templateUrl, position.searchTerms);
-      } else {
-        await openFile(newInfo.filePath);
+      try {
+        if (ev.shiftKey) {
+          await openFile(newInfo.filePath);
+        } else if (newInfo.templateUrl) {
+          const position = findTemplatePosition(el, el);
+          await openFileWithSearch(newInfo.templateUrl, position.searchTerms);
+        } else {
+          await openFile(newInfo.filePath);
+        }
+      } catch (retryError) {
+        if (OPTIONS.debug) {
+          console.warn('[angular-locator] Retry failed:', retryError);
+        }
+        showClickFeedback(ev.clientX, ev.clientY, 'Failed to open file');
       }
     } else {
       showClickFeedback(ev.clientX, ev.clientY, 'Component not found in updated map');
