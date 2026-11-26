@@ -96,21 +96,71 @@ function checkEditorCLI(editorName: string, cliCommand = editorName) {
   return editorCLICache[editorName];
 }
 
-const MAC_APP_NAMES: Record<string, string> = {
-  antigravity: 'Antigravity IDE',
-  cursor: 'Cursor',
-  code: 'Visual Studio Code',
-  zed: 'Zed',
-  webstorm: 'WebStorm',
+type FilePosition = { filePath: string; line: string; col: string };
+
+type EditorSpec = {
+  /** CLI command expected on PATH. */
+  cli: string;
+  /** macOS application name (`open -a`, and where to look for the bundled CLI). */
+  macApp: string;
+  /** macOS bundle identifier, to find the app outside the standard folders. */
+  bundleId: string;
+  /** CLI shipped inside the macOS app bundle, used when the PATH CLI is not installed. */
+  bundledCli?: string;
+  /** VS Code-style URL scheme (`<scheme>://file/<path>:<line>:<col>`), handled by the app. */
+  urlScheme?: string;
+  args: (pos: FilePosition) => string[];
+};
+
+const gotoArgs = (pos: FilePosition) => ['--goto', `${pos.filePath}:${pos.line}:${pos.col}`];
+
+const EDITORS: Record<string, EditorSpec> = {
+  cursor: {
+    cli: 'cursor',
+    macApp: 'Cursor',
+    bundleId: 'com.todesktop.230313mzl4w4u92',
+    bundledCli: 'Contents/Resources/app/bin/cursor',
+    urlScheme: 'cursor',
+    args: gotoArgs,
+  },
+  code: {
+    cli: 'code',
+    macApp: 'Visual Studio Code',
+    bundleId: 'com.microsoft.VSCode',
+    bundledCli: 'Contents/Resources/app/bin/code',
+    urlScheme: 'vscode',
+    args: gotoArgs,
+  },
+  antigravity: {
+    cli: 'antigravity',
+    macApp: 'Antigravity',
+    bundleId: 'com.google.antigravity',
+    bundledCli: 'Contents/Resources/app/bin/antigravity',
+    urlScheme: 'antigravity',
+    args: gotoArgs,
+  },
+  zed: {
+    cli: 'zed',
+    macApp: 'Zed',
+    bundleId: 'dev.zed.Zed',
+    bundledCli: 'Contents/MacOS/cli',
+    args: (p) => [`${p.filePath}:${p.line}:${p.col}`],
+  },
+  webstorm: {
+    cli: 'webstorm',
+    macApp: 'WebStorm',
+    bundleId: 'com.jetbrains.WebStorm',
+    bundledCli: 'Contents/MacOS/webstorm',
+    args: (p) => ['--line', p.line, '--column', p.col, p.filePath],
+  },
 };
 
 function detectAvailableEditors() {
-  const editors = ['cursor', 'zed', 'antigravity', 'code', 'webstorm'];
   const available: Array<{ name: string; hasCliPrecision: boolean }> = [];
 
-  for (const editor of editors) {
-    if (checkEditorCLI(editor)) {
-      available.push({ name: editor, hasCliPrecision: true });
+  for (const [name, spec] of Object.entries(EDITORS)) {
+    if (checkEditorCLI(name, spec.cli)) {
+      available.push({ name, hasCliPrecision: true });
     }
   }
 
@@ -124,83 +174,185 @@ const FALLBACK_EDITOR =
   AVAILABLE_EDITORS.find((editor) => editor.name !== DEFAULT_EDITOR)?.name ||
   'code';
 
-type FilePosition = { filePath: string; line: string; col: string };
+const macAppCache = new Map<string, string | null>();
 
-/**
- * Builds the command for an editor. When the editor CLI is missing, macOS falls back to
- * `open -a <App>`; other platforms still try the CLI name so the failure is reported
- * (and the fallback editor is tried) instead of running a macOS-only command.
- */
-function cliOrAppFallback(
-  editor: string,
-  pos: FilePosition,
-  buildCliArgs: (pos: FilePosition) => string[],
-): [string, string[]] {
-  if (checkEditorCLI(editor) || process.platform !== 'darwin') {
-    return [editor, buildCliArgs(pos)];
+/** Finds an app bundle in /Applications or ~/Applications, then anywhere via Spotlight. */
+function findMacApp(spec: EditorSpec): string | null {
+  const cached = macAppCache.get(spec.bundleId);
+  if (cached !== undefined) return cached;
+
+  const home = process.env.HOME;
+  let found =
+    ['/Applications', home ? path.join(home, 'Applications') : null]
+      .filter((dir): dir is string => Boolean(dir))
+      .map((dir) => path.join(dir, `${spec.macApp}.app`))
+      .find((candidate) => fs.existsSync(candidate)) ?? null;
+
+  if (!found) {
+    try {
+      const output = childProcess.execFileSync(
+        'mdfind',
+        [`kMDItemCFBundleIdentifier == '${spec.bundleId}'`],
+        { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] },
+      );
+      found = output.split('\n').find((line) => line.endsWith('.app')) ?? null;
+    } catch {
+      found = null;
+    }
   }
-  return ['open', ['-a', MAC_APP_NAMES[editor], pos.filePath]];
+
+  macAppCache.set(spec.bundleId, found);
+  return found;
 }
 
-const gotoArgs = (pos: FilePosition) => ['--goto', `${pos.filePath}:${pos.line}:${pos.col}`];
-
-const COMMAND_TEMPLATES: Record<string, (pos: FilePosition) => [string, string[]]> = {
-  antigravity: (pos) => cliOrAppFallback('antigravity', pos, gotoArgs),
-  cursor: (pos) => cliOrAppFallback('cursor', pos, gotoArgs),
-  code: (pos) => cliOrAppFallback('code', pos, gotoArgs),
-  zed: (pos) => cliOrAppFallback('zed', pos, (p) => [`${p.filePath}:${p.line}:${p.col}`]),
-  webstorm: (pos) =>
-    cliOrAppFallback('webstorm', pos, (p) => ['--line', p.line, '--column', p.col, p.filePath]),
+type LaunchAttempt = {
+  description: string;
+  cmd: string;
+  args: string[];
+  lineNavigation: boolean;
 };
 
 /**
- * Spawns a detached process and resolves once it has actually started.
+ * Ways to open a file in an editor, most precise first. Beyond the CLI on PATH, macOS
+ * users often have only the app installed, so the CLI inside the app bundle and the app's
+ * URL scheme also give line navigation; `open -a` opens the file without it.
+ */
+function getLaunchAttempts(editor: string, pos: FilePosition): LaunchAttempt[] {
+  const spec = EDITORS[editor];
+  if (!spec) return [];
+  const attempts: LaunchAttempt[] = [];
+
+  if (checkEditorCLI(editor, spec.cli) || process.platform !== 'darwin') {
+    attempts.push({
+      description: `${spec.cli} CLI`,
+      cmd: spec.cli,
+      args: spec.args(pos),
+      lineNavigation: true,
+    });
+  }
+  if (process.platform !== 'darwin') return attempts;
+
+  const appPath = findMacApp(spec);
+  if (appPath && spec.bundledCli) {
+    const bundledCli = path.join(appPath, spec.bundledCli);
+    if (fs.existsSync(bundledCli)) {
+      attempts.push({
+        description: `bundled CLI ${bundledCli}`,
+        cmd: bundledCli,
+        args: spec.args(pos),
+        lineNavigation: true,
+      });
+    }
+  }
+  if (appPath && spec.urlScheme) {
+    attempts.push({
+      description: `${spec.urlScheme}:// URL`,
+      cmd: 'open',
+      args: [`${spec.urlScheme}://file${encodeURI(pos.filePath)}:${pos.line}:${pos.col}`],
+      lineNavigation: true,
+    });
+  }
+  attempts.push({
+    description: `open -a (no line navigation)`,
+    cmd: 'open',
+    // A found bundle path also works for apps outside /Applications.
+    args: ['-a', appPath ?? spec.macApp, pos.filePath],
+    lineNavigation: false,
+  });
+  return attempts;
+}
+
+/** How the configured editor will be launched, for the startup log. */
+function describeEditor(editor: string): string {
+  const [first] = getLaunchAttempts(editor, { filePath: '/x', line: '1', col: '1' });
+  return first ? `${editor} via ${first.description}` : `${editor} (unknown editor)`;
+}
+
+const LAUNCH_CONFIRM_MS = 1500;
+
+/**
+ * Spawns a detached process and reports whether the launch worked.
  * `spawn` reports a missing executable (ENOENT) asynchronously through the `'error'` event,
  * not by throwing, so a try/catch alone neither detects the failure nor prevents the
- * unhandled `'error'` event from crashing the server.
+ * unhandled `'error'` event from crashing the server. Launchers such as `open` or an
+ * editor CLI exit quickly, so a non-zero exit within a short window (e.g. `open -a` with
+ * an unknown app) is a failure; a process still running after it (an IDE starting in the
+ * foreground) counts as launched.
  */
 function spawnDetached(label: string, cmd: string, args: string[]): Promise<boolean> {
   return new Promise((resolve) => {
-    let child: childProcess.ChildProcess;
+    let settled = false;
+    const settle = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      child?.stderr?.destroy();
+      resolve(ok);
+    };
+
+    let child: childProcess.ChildProcess | undefined;
     try {
-      child = childProcess.spawn(cmd, args, { stdio: 'ignore', detached: true });
+      child = childProcess.spawn(cmd, args, {
+        stdio: ['ignore', 'ignore', 'pipe'],
+        detached: true,
+      });
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
       console.log(`[file-opener] ${label} failed: ${message}`);
-      resolve(false);
+      settle(false);
       return;
     }
+
+    let stderr = '';
+    child.stderr?.on('data', (chunk) => {
+      if (stderr.length < 500) stderr += chunk;
+    });
     child.once('error', (e) => {
       console.log(`[file-opener] ${label} failed: ${e.message}`);
-      resolve(false);
+      settle(false);
+    });
+    child.once('exit', (code) => {
+      if (code === 0) {
+        settle(true);
+        return;
+      }
+      console.log(
+        `[file-opener] ${label} exited with code ${code}${stderr ? `: ${stderr.trim()}` : ''}`,
+      );
+      settle(false);
     });
     child.once('spawn', () => {
-      child.unref();
-      resolve(true);
+      child!.unref();
+      setTimeout(() => settle(true), LAUNCH_CONFIRM_MS).unref();
     });
   });
 }
 
-async function launchInEditor(pos: FilePosition, preferred = DEFAULT_EDITOR): Promise<boolean> {
+type LaunchResult = { ok: boolean; lineNavigation: boolean };
+
+async function launchInEditor(
+  pos: FilePosition,
+  preferred = DEFAULT_EDITOR,
+): Promise<LaunchResult> {
   if (process.env.EDITOR_CMD) {
     const [cmd, ...rest] = process.env.EDITOR_CMD.split(' ');
     const fileWithPos = `${pos.filePath}:${pos.line}:${pos.col}`;
-    if (await spawnDetached('EDITOR_CMD', cmd, [...rest, fileWithPos])) return true;
+    if (await spawnDetached('EDITOR_CMD', cmd, [...rest, fileWithPos])) {
+      return { ok: true, lineNavigation: true };
+    }
   }
 
-  const tryRun = async (editor: string) => {
-    const mk = COMMAND_TEMPLATES[editor];
-    if (!mk) return false;
-    const [cmd, args] = mk(pos);
-    return spawnDetached(editor, cmd, args);
-  };
+  const editors = [preferred];
+  if (FALLBACK_EDITOR && FALLBACK_EDITOR !== preferred) editors.push(FALLBACK_EDITOR);
 
-  if (await tryRun(preferred)) return true;
-  if (FALLBACK_EDITOR && FALLBACK_EDITOR !== preferred && (await tryRun(FALLBACK_EDITOR))) {
-    return true;
+  for (const editor of editors) {
+    for (const attempt of getLaunchAttempts(editor, pos)) {
+      if (await spawnDetached(`${editor} (${attempt.description})`, attempt.cmd, attempt.args)) {
+        return { ok: true, lineNavigation: attempt.lineNavigation };
+      }
+    }
   }
 
-  return false;
+  return { ok: false, lineNavigation: false };
 }
 
 function findBestLineInFile(filePath: string, searchTerms: string[]) {
@@ -596,14 +748,14 @@ const server = http.createServer(async (req, res) => {
 
     console.log(`[file-opener] Opening file: ${safePath}:${line}:${col}`);
 
-    const ok = await launchInEditor({ filePath: safePath, line, col });
+    const { ok, lineNavigation } = await launchInEditor({ filePath: safePath, line, col });
 
     if (!ok) {
       res.statusCode = 500;
       res.end('Failed to launch editor. Check PATH or set EDITOR_CMD.');
       return;
     }
-    res.end('ok');
+    res.end(lineNavigation ? 'ok' : 'ok (opened without line navigation)');
     return;
   }
 
@@ -641,7 +793,11 @@ const server = http.createServer(async (req, res) => {
       }
       const bestLine = findBestLineInFile(safePath, searchTerms);
 
-      const ok = await launchInEditor({ filePath: safePath, line: String(bestLine), col: '1' });
+      const { ok, lineNavigation } = await launchInEditor({
+        filePath: safePath,
+        line: String(bestLine),
+        col: '1',
+      });
 
       if (!ok) {
         res.statusCode = 500;
@@ -649,7 +805,11 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      res.end(`Opened at line ${bestLine}`);
+      res.end(
+        lineNavigation
+          ? `Opened at line ${bestLine}`
+          : `Opened without line navigation (best line: ${bestLine})`,
+      );
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
       console.warn(`[file-opener] Search error: ${message}`);
@@ -706,7 +866,8 @@ server
   .listen(PORT, HOST, () => {
     console.log(`[file-opener] http://${HOST}:${PORT}`);
     console.log(` - map: ${path.relative(root, MAP_PATH)}`);
-    console.log(` - editor: ${DEFAULT_EDITOR} (fallback: ${FALLBACK_EDITOR})`);
+    console.log(` - editor: ${describeEditor(DEFAULT_EDITOR)}`);
+    console.log(` - fallback: ${describeEditor(FALLBACK_EDITOR)}`);
     console.log(` - workspace root: ${WORKSPACE_ROOT}`);
     if (AUTH_TOKEN) {
       console.log(' - auth: enabled');

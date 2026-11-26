@@ -179,3 +179,11 @@ test('resolve returns the component files for a debug-info path and class name',
   });
   assert.equal(outside.status, 403);
 });
+
+test('a launcher that exits with an error counts as a failure, not a success', async (t) => {
+  // Like `open -a "Unknown App"`: the process starts, then exits non-zero right away.
+  const { request } = await startOpener(t, `${process.execPath} -e process.exit(1)`);
+
+  const res = await request('/__open-in-editor', { file: 'src/a.html' });
+  assert.equal(res.status, 500);
+});
