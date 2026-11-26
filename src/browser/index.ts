@@ -2,6 +2,20 @@ type CmpInfo = {
   className: string;
   filePath: string;
   templateUrl?: string;
+  /** 1-based line of the class declaration. */
+  line?: number;
+  /** Component selector from the scan; absent in maps written by older versions. */
+  selector?: string;
+};
+
+/**
+ * Set by Angular on component definitions in dev builds: className since 17,
+ * filePath (relative to the TypeScript root) and lineNumber since 19.
+ */
+type ClassDebugInfo = {
+  className: string;
+  filePath?: string;
+  lineNumber?: number;
 };
 
 type CmpMap = {
@@ -12,6 +26,7 @@ type CmpMap = {
 type AngularGlobal = {
   getOwningComponent?: (el: Element) => unknown;
   getComponent?: (el: Element) => unknown;
+  getHostElement?: (component: object) => Element | null;
 };
 
 type RuntimeComponent = {
@@ -20,37 +35,66 @@ type RuntimeComponent = {
   };
 };
 
-type LocatorComponent = RuntimeComponent & {
-  __isMockComponent?: boolean;
-  __cmpInfo?: CmpInfo;
+type LocatorComponent = {
+  className: string;
+  info: CmpInfo;
+  /** Host element of the component whose template contains the target element. */
+  hostElement: Element | null;
+  /** Set while the template path from Angular's debug info is still being resolved. */
+  pending?: Promise<CmpInfo | null>;
 };
+
+export type ModifierKey = 'alt' | 'ctrl' | 'meta' | 'shift';
 
 export type AngularLocatorEndpoints = {
   openInEditor: string;
   openInEditorSearch: string;
   componentMap: string;
+  /** Resolves Angular debug info (file + class) to the component's files. */
+  resolveComponent: string;
 };
 
 export type AngularLocatorOptions = {
   endpoints?: Partial<AngularLocatorEndpoints>;
   enableNetwork?: boolean;
+  /**
+   * Where the opener server listens. The runtime calls it directly (CORS), so no dev-server
+   * proxy is needed. `false` uses only the same-origin proxy routes in `endpoints`.
+   * Default: `'http://127.0.0.1:4123'`, or `false` when `endpoints` is given.
+   */
+  openerUrl?: string | false;
   prefetchMap?: boolean;
   enableHover?: boolean;
   enableClick?: boolean;
   showTooltip?: boolean;
   showClickFeedback?: boolean;
+  /**
+   * Keys to hold for hover and click, joined with `+` (e.g. `'alt'`, `'ctrl+shift'`).
+   * Aliases: `option` = alt, `control` = ctrl, `cmd`/`command` = meta. Default: `'alt'`.
+   */
+  modifier?: string;
+  /**
+   * Extra key that opens the component `.ts` instead of the template. Default: `'shift'`.
+   * `false` disables it. Must not overlap with `modifier`.
+   */
+  componentModifier?: string | false;
   authToken?: string;
   debug?: boolean;
 };
 
 type ResolvedOptions = {
   endpoints: AngularLocatorEndpoints;
+  /** null: proxy routes only. */
+  openerUrl: string | null;
   enableNetwork: boolean;
   prefetchMap: boolean;
   enableHover: boolean;
   enableClick: boolean;
   showTooltip: boolean;
   showClickFeedback: boolean;
+  modifier: ModifierKey[];
+  /** Empty when disabled. */
+  componentModifier: ModifierKey[];
   authToken: string | null;
   debug: boolean;
 };
@@ -59,19 +103,131 @@ const DEFAULT_ENDPOINTS: AngularLocatorEndpoints = {
   openInEditor: '/__open-in-editor',
   openInEditorSearch: '/__open-in-editor-search',
   componentMap: '/__cmp-map',
+  // Shares the /__open-in-editor prefix so existing proxy configs forward it.
+  resolveComponent: '/__open-in-editor-resolve',
 };
+
+const DEFAULT_OPENER_URL = 'http://127.0.0.1:4123';
 
 const DEFAULT_OPTIONS: ResolvedOptions = {
   endpoints: DEFAULT_ENDPOINTS,
+  openerUrl: DEFAULT_OPENER_URL,
   enableNetwork: false,
   prefetchMap: true,
   enableHover: true,
   enableClick: true,
   showTooltip: true,
   showClickFeedback: true,
+  modifier: ['alt'],
+  componentModifier: ['shift'],
   authToken: null,
   debug: false,
 };
+
+const MODIFIER_ALIASES: Record<string, ModifierKey> = {
+  alt: 'alt',
+  option: 'alt',
+  opt: 'alt',
+  ctrl: 'ctrl',
+  control: 'ctrl',
+  meta: 'meta',
+  cmd: 'meta',
+  command: 'meta',
+  shift: 'shift',
+};
+
+/** Parses `'ctrl+shift'`-style strings. Returns null when any part is unknown or none is given. */
+function parseModifiers(value: string): ModifierKey[] | null {
+  const parts = value
+    .split('+')
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean);
+  if (parts.length === 0) return null;
+
+  const keys: ModifierKey[] = [];
+  for (const part of parts) {
+    const key = MODIFIER_ALIASES[part];
+    if (!key) return null;
+    if (!keys.includes(key)) keys.push(key);
+  }
+  return keys;
+}
+
+function resolveModifierOptions(options: AngularLocatorOptions): {
+  modifier: ModifierKey[];
+  componentModifier: ModifierKey[];
+} {
+  let modifier = DEFAULT_OPTIONS.modifier;
+  if (options.modifier !== undefined) {
+    const parsed = parseModifiers(options.modifier);
+    if (parsed) {
+      modifier = parsed;
+    } else {
+      console.warn(
+        `[angular-locator] Invalid modifier "${options.modifier}", using "alt". Use keys alt, ctrl, meta, shift joined with "+".`,
+      );
+    }
+  }
+
+  let componentModifier = DEFAULT_OPTIONS.componentModifier;
+  if (options.componentModifier === false) {
+    componentModifier = [];
+  } else if (options.componentModifier !== undefined) {
+    const parsed = parseModifiers(options.componentModifier);
+    if (parsed) {
+      componentModifier = parsed;
+    } else {
+      console.warn(
+        `[angular-locator] Invalid componentModifier "${options.componentModifier}", using "shift".`,
+      );
+    }
+  }
+
+  if (componentModifier.some((key) => modifier.includes(key))) {
+    // An overlapping key would make every click open the .ts file.
+    console.warn(
+      `[angular-locator] componentModifier "${componentModifier.join('+')}" overlaps modifier "${modifier.join('+')}"; opening the .ts file by key is disabled. Set componentModifier to a different key.`,
+    );
+    componentModifier = [];
+  }
+
+  return { modifier, componentModifier };
+}
+
+function modifiersPressed(ev: MouseEvent | KeyboardEvent, keys: ModifierKey[]): boolean {
+  if (keys.length === 0) return false;
+  return keys.every((key) => {
+    if (key === 'alt') return ev.altKey;
+    if (key === 'ctrl') return ev.ctrlKey;
+    if (key === 'meta') return ev.metaKey;
+    return ev.shiftKey;
+  });
+}
+
+function isMacPlatform(): boolean {
+  const platform =
+    (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ??
+    navigator.platform ??
+    '';
+  return /mac|iphone|ipad/i.test(platform);
+}
+
+function formatModifiers(keys: ModifierKey[]): string {
+  const mac = isMacPlatform();
+  const labels: Record<ModifierKey, string> = {
+    alt: mac ? 'Option' : 'Alt',
+    ctrl: 'Ctrl',
+    meta: mac ? 'Cmd' : 'Meta',
+    shift: 'Shift',
+  };
+  return keys.map((key) => labels[key]).join('+');
+}
+
+/** Last few path segments, enough to recognize the file without the absolute prefix. */
+function shortenPath(filePath: string, segments = 3): string {
+  const parts = filePath.split(/[\\/]/).filter(Boolean);
+  return parts.length <= segments ? parts.join('/') : `…/${parts.slice(-segments).join('/')}`;
+}
 
 let OPTIONS: ResolvedOptions = DEFAULT_OPTIONS;
 let INSTALLED = false;
@@ -106,21 +262,69 @@ function assertNetworkAllowed(url: string): string {
   return resolved.toString();
 }
 
-function attachAuthToken(url: string): string {
-  if (!OPTIONS.authToken) return url;
+/**
+ * How the runtime reaches the opener: directly at `openerUrl`, or through same-origin
+ * routes forwarded by a dev-server proxy (the older setup). Chosen on the first request
+ * that reaches an opener, then reused.
+ */
+type Transport = 'direct' | 'proxy';
+let activeTransport: Transport | null = null;
 
-  const resolved = new URL(url, window.location.href);
-  if (!resolved.searchParams.has('token')) {
-    resolved.searchParams.set('token', OPTIONS.authToken);
-  }
-  return resolved.toString();
+function getTransports(): Transport[] {
+  if (activeTransport) return [activeTransport];
+  return OPTIONS.openerUrl ? ['direct', 'proxy'] : ['proxy'];
 }
 
-function getAuthHeaders(): HeadersInit | undefined {
-  if (!OPTIONS.authToken) return undefined;
-  return {
-    'x-locatorjs-token': OPTIONS.authToken,
-  };
+function buildOpenerUrl(
+  transport: Transport,
+  endpoint: keyof AngularLocatorEndpoints,
+  query: Record<string, string>,
+): string {
+  const base = transport === 'direct' ? OPTIONS.openerUrl! : window.location.href;
+  const url = new URL(OPTIONS.endpoints[endpoint], base);
+  for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
+  if (OPTIONS.authToken && !url.searchParams.has('token')) {
+    url.searchParams.set('token', OPTIONS.authToken);
+  }
+  return assertNetworkAllowed(url.toString());
+}
+
+/**
+ * Calls an opener route. Every request carries `x-locatorjs-request`, which the opener
+ * requires: other sites cannot add it without a CORS preflight the opener refuses.
+ * Resolves with the opener's response (any status); rejects when no opener is reachable.
+ */
+async function openerFetch(
+  endpoint: keyof AngularLocatorEndpoints,
+  query: Record<string, string>,
+): Promise<Response> {
+  let lastError: unknown = new Error('Opener not reachable');
+  for (const transport of getTransports()) {
+    let res: Response;
+    try {
+      res = await fetch(buildOpenerUrl(transport, endpoint, query), {
+        cache: 'no-store',
+        headers: {
+          'x-locatorjs-request': '1',
+          ...(OPTIONS.authToken ? { 'x-locatorjs-token': OPTIONS.authToken } : {}),
+        },
+      });
+    } catch (e) {
+      lastError = e;
+      continue;
+    }
+    // Something else may answer on the port or the proxy path (e.g. the dev server's 404).
+    if (!res.headers.get('x-locatorjs-opener')) {
+      lastError = new Error(`No opener at ${transport} endpoint (HTTP ${res.status})`);
+      continue;
+    }
+    if (activeTransport !== transport && OPTIONS.debug) {
+      console.log(`[angular-locator] Using ${transport} connection to the opener`);
+    }
+    activeTransport = transport;
+    return res;
+  }
+  throw lastError;
 }
 
 function normalizeMap(map: CmpMap): CmpMap {
@@ -139,21 +343,12 @@ function normalizeMap(map: CmpMap): CmpMap {
 async function ensureMap(forceRefresh = false): Promise<CmpMap> {
   if (CMP_MAP && !forceRefresh) return CMP_MAP;
 
-  const timestamp = Date.now();
-  const res = await fetch(
-    attachAuthToken(assertNetworkAllowed(`${OPTIONS.endpoints.componentMap}?t=${timestamp}`)),
-    {
-      cache: 'no-store',
-      headers: {
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        Pragma: 'no-cache',
-        Expires: '0',
-        ...getAuthHeaders(),
-      },
-    },
-  );
+  const res = await openerFetch('componentMap', { t: String(Date.now()) });
 
   const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Component map request failed (HTTP ${res.status}): ${text.substring(0, 100)}`);
+  }
 
   try {
     CMP_MAP = normalizeMap(JSON.parse(text));
@@ -166,13 +361,15 @@ async function ensureMap(forceRefresh = false): Promise<CmpMap> {
   }
 }
 
-function ensureMapIfNeeded() {
-  if (CMP_MAP || mapLoadPromise) return;
-  mapLoadPromise = ensureMap()
-    .catch(() => undefined)
-    .finally(() => {
+/** Loads the map once even when many hover events ask for it at the same time. */
+function ensureMapOnce(): Promise<CmpMap | undefined> {
+  if (CMP_MAP) return Promise.resolve(CMP_MAP);
+  if (!mapLoadPromise) {
+    mapLoadPromise = ensureMap().finally(() => {
       mapLoadPromise = null;
     });
+  }
+  return mapLoadPromise;
 }
 
 /**
@@ -229,13 +426,38 @@ function selectBestMatchingFile(candidates: string[]): string {
   return bestMatch;
 }
 
-function getComponentInfoByClassName(className: string): CmpInfo | null {
+/**
+ * True when the component's scanned selector matches its host element. Uses the DOM's own
+ * selector engine, so element, attribute (`[appCard]`), class, and `:not()` selectors work.
+ */
+function selectorMatchesHost(selector: string, hostElement: Element): boolean {
+  try {
+    return hostElement.matches(selector);
+  } catch {
+    // Not valid CSS for the browser; treat as unknown.
+    return false;
+  }
+}
+
+function getComponentInfoByClassName(
+  className: string,
+  hostElement: Element | null = null,
+): CmpInfo | null {
   if (!CMP_MAP) return null;
   const classNameCandidates = getClassNameCandidates(className);
 
   for (const candidate of classNameCandidates) {
-    const candidates = CMP_MAP.filePathsByClassName?.[candidate];
+    let candidates = CMP_MAP.filePathsByClassName?.[candidate];
     if (!candidates?.length) continue;
+
+    // Same-named components usually differ by selector; the URL heuristic is the last resort.
+    if (candidates.length > 1 && hostElement) {
+      const bySelector = candidates.filter((filePath) => {
+        const selector = CMP_MAP!.detailByFilePath[filePath]?.selector;
+        return selector ? selectorMatchesHost(selector, hostElement) : false;
+      });
+      if (bySelector.length > 0) candidates = bySelector;
+    }
 
     const filePath = selectBestMatchingFile(candidates);
     const info = CMP_MAP.detailByFilePath[filePath] ?? null;
@@ -281,51 +503,161 @@ function getAngularRuntimeComponent(el: Element): RuntimeComponent | null {
   return null;
 }
 
-function getNearestComponent(el: Element): LocatorComponent | null {
-  if (!CMP_MAP) return null;
-
-  const runtimeComponent = getAngularRuntimeComponent(el);
-  const runtimeClassName = runtimeComponent?.constructor?.name;
-  if (!runtimeClassName) return null;
-
-  const info = getComponentInfoByClassName(runtimeClassName);
-  if (!info) return null;
-
-  return {
-    constructor: { name: info.className },
-    __isMockComponent: true,
-    __cmpInfo: info,
-  };
-}
-
-async function openFile(absPath: string, line = 1, col = 1) {
-  const url = attachAuthToken(
-    assertNetworkAllowed(
-      `${OPTIONS.endpoints.openInEditor}?file=${encodeURIComponent(absPath)}&line=${line}&col=${col}`,
-    ),
-  );
+function getHostElement(component: RuntimeComponent): Element | null {
+  const ng = (window as Window & { ng?: AngularGlobal }).ng;
+  if (typeof ng?.getHostElement !== 'function') return null;
   try {
-    await fetch(url, { headers: getAuthHeaders() });
-  } catch (e) {
-    if (OPTIONS.debug) {
-      console.warn(e);
-    }
+    return ng.getHostElement(component as object) ?? null;
+  } catch {
+    return null;
   }
 }
 
-async function openFileWithSearch(absPath: string, searchTerms: string[]) {
-  const url = attachAuthToken(
-    assertNetworkAllowed(
-      `${OPTIONS.endpoints.openInEditorSearch}?file=${encodeURIComponent(absPath)}&search=${encodeURIComponent(
-        JSON.stringify(searchTerms),
-      )}`,
-    ),
-  );
+function getClassDebugInfo(component: RuntimeComponent): ClassDebugInfo | null {
+  // '\u0275cmp' is Angular's component definition property, escaped to keep the output ASCII.
+  const type = component.constructor as Record<string, { debugInfo?: ClassDebugInfo }> | undefined;
+  const debugInfo = type?.['\u0275cmp']?.debugInfo;
+  return debugInfo && typeof debugInfo.className === 'string' ? debugInfo : null;
+}
+
+/** Resolved debug-info lookups by `filePath#className`; null when the opener could not resolve. */
+const resolvedComponents = new Map<string, CmpInfo | null>();
+const pendingResolutions = new Map<string, Promise<CmpInfo | null>>();
+
+function resolveDebugInfo(debugInfo: ClassDebugInfo & { filePath: string }) {
+  const key = `${debugInfo.filePath}#${debugInfo.className}`;
+  const pending = pendingResolutions.get(key);
+  if (pending) return pending;
+
+  const promise = (async (): Promise<CmpInfo | null> => {
+    const res = await openerFetch('resolveComponent', {
+      file: debugInfo.filePath,
+      className: debugInfo.className,
+    });
+    if (!res.ok) {
+      // e.g. an older opener without this route: fall back to the component map.
+      if (OPTIONS.debug) {
+        console.warn(`[angular-locator] Could not resolve ${key} (HTTP ${res.status})`);
+      }
+      resolvedComponents.set(key, null);
+      return null;
+    }
+    const body = (await res.json()) as {
+      className: string;
+      filePath: string;
+      templateUrl: string | null;
+      line: number;
+    };
+    const info: CmpInfo = {
+      className: body.className,
+      filePath: body.filePath,
+      templateUrl: body.templateUrl ?? undefined,
+      line: body.line,
+    };
+    resolvedComponents.set(key, info);
+    return info;
+  })()
+    .catch((e) => {
+      // Network errors are not cached, so the next attempt retries.
+      if (OPTIONS.debug) console.warn('[angular-locator] Resolve failed:', e);
+      return null;
+    })
+    .finally(() => pendingResolutions.delete(key));
+
+  pendingResolutions.set(key, promise);
+  return promise;
+}
+
+/**
+ * Finds the component whose template contains `el` and the files to open.
+ * Angular's class debug info identifies the exact file even when several components
+ * share a class name; the scanned component map is the fallback (older Angular,
+ * production-like builds, or an opener that cannot resolve).
+ * Returns synchronously for hover: an unresolved debug-info component comes back with
+ * `pending` and a provisional .ts-only info.
+ */
+function getNearestComponent(el: Element): LocatorComponent | null {
+  const runtimeComponent = getAngularRuntimeComponent(el);
+  if (!runtimeComponent) return null;
+
+  const debugInfo = getClassDebugInfo(runtimeComponent);
+  const className = debugInfo?.className ?? runtimeComponent.constructor?.name;
+  if (!className) return null;
+  const hostElement = getHostElement(runtimeComponent);
+
+  if (debugInfo?.filePath) {
+    const key = `${debugInfo.filePath}#${debugInfo.className}`;
+    const resolved = resolvedComponents.get(key);
+    if (resolved) return { className, info: resolved, hostElement };
+    if (!resolvedComponents.has(key) && OPTIONS.enableNetwork) {
+      const provisional: CmpInfo = {
+        className,
+        filePath: debugInfo.filePath,
+        line: debugInfo.lineNumber,
+      };
+      return {
+        className,
+        info: provisional,
+        hostElement,
+        pending: resolveDebugInfo({ ...debugInfo, filePath: debugInfo.filePath }),
+      };
+    }
+  }
+
+  if (!CMP_MAP) return null;
+  const info = getComponentInfoByClassName(className, hostElement);
+  if (!info) return null;
+  return { className: info.className, info, hostElement };
+}
+
+/** Like getNearestComponent, but waits for debug-info resolution and the component map. */
+async function findNearestComponent(el: Element): Promise<LocatorComponent | null> {
+  const cmp = getNearestComponent(el);
+  if (cmp?.pending) {
+    await cmp.pending;
+    return findNearestComponent(el);
+  }
+  if (cmp || CMP_MAP) return cmp;
+
   try {
-    await fetch(url, { headers: getAuthHeaders() });
+    await ensureMapOnce();
   } catch (e) {
     if (OPTIONS.debug) {
-      console.warn('[angular-locator] Search failed:', e);
+      console.warn('[angular-locator] Failed to load component map:', e);
+    }
+    return null;
+  }
+  return getNearestComponent(el);
+}
+
+/**
+ * Sends an open request and throws on network errors and non-2xx responses,
+ * so callers can react (e.g. refresh a stale component map).
+ */
+async function requestOpen(
+  endpoint: 'openInEditor' | 'openInEditorSearch',
+  query: Record<string, string>,
+) {
+  const res = await openerFetch(endpoint, query);
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Open request failed (HTTP ${res.status}): ${body}`);
+  }
+}
+
+async function openFile(absPath: string, line = 1, col = 1) {
+  await requestOpen('openInEditor', { file: absPath, line: String(line), col: String(col) });
+}
+
+async function openFileWithSearch(absPath: string, searchTerms: string[]) {
+  try {
+    await requestOpen('openInEditorSearch', {
+      file: absPath,
+      search: JSON.stringify(searchTerms),
+    });
+  } catch (e) {
+    if (OPTIONS.debug) {
+      console.warn('[angular-locator] Search failed, opening without search:', e);
     }
     await openFile(absPath);
   }
@@ -338,6 +670,7 @@ function addStyles() {
   style.id = 'angular-locator-styles';
   style.textContent = `
     .dev-highlight-overlay {
+      box-sizing: border-box;
       position: fixed;
       pointer-events: none;
       z-index: 99998;
@@ -348,6 +681,14 @@ function addStyles() {
         0 0 0 1px rgba(96, 165, 250, 0.05) inset,
         0 4px 12px rgba(15, 23, 42, 0.18);
       transition: all 0.12s ease;
+    }
+    .dev-highlight-target {
+      box-sizing: border-box;
+      position: fixed;
+      pointer-events: none;
+      z-index: 99998;
+      border-radius: 4px;
+      border: 1px dashed rgba(96, 165, 250, 0.9);
     }
     .dev-tooltip {
       position: absolute;
@@ -363,6 +704,15 @@ function addStyles() {
       pointer-events: none;
       white-space: nowrap;
       letter-spacing: 0.2px;
+      line-height: 1.5;
+    }
+    .dev-tooltip-name {
+      color: #f8fafc;
+      font-weight: 600;
+    }
+    .dev-tooltip-path,
+    .dev-tooltip-hint {
+      color: #94a3b8;
     }
     .dev-click-feedback {
       position: fixed;
@@ -450,36 +800,31 @@ function findTemplatePosition(
   return { searchTerms };
 }
 
-async function handleAltOpen(ev: MouseEvent | PointerEvent, el: Element) {
-  if (!CMP_MAP) {
-    try {
-      await ensureMap();
-    } catch (e) {
-      if (OPTIONS.debug) {
-        console.warn('[angular-locator] Failed to load component map on click:', e);
-      }
-    }
-  }
+function isComponentModifierPressed(ev: MouseEvent | KeyboardEvent): boolean {
+  return modifiersPressed(ev, OPTIONS.componentModifier);
+}
 
-  const cmp = getNearestComponent(el);
+async function handleOpen(ev: MouseEvent | PointerEvent, el: Element) {
+  const cmp = await findNearestComponent(el);
   if (!cmp) return;
 
-  const className = cmp.constructor?.name;
-  const info: CmpInfo | undefined = cmp.__cmpInfo;
-  if (!info) return;
+  const openComponentFile = isComponentModifierPressed(ev);
+  const { className, info } = cmp;
 
-  const targetFile = ev.shiftKey ? 'component' : info.templateUrl ? 'template' : 'component';
+  const targetFile = openComponentFile ? 'component' : info.templateUrl ? 'template' : 'component';
   showClickFeedback(ev.clientX, ev.clientY, `Opening ${className} ${targetFile}...`);
 
-  try {
-    if (ev.shiftKey) {
-      await openFile(info.filePath);
-    } else if (info.templateUrl) {
-      const position = findTemplatePosition(el, el);
-      await openFileWithSearch(info.templateUrl, position.searchTerms);
+  const open = async (target: CmpInfo) => {
+    if (openComponentFile || !target.templateUrl) {
+      await openFile(target.filePath, target.line ?? 1);
     } else {
-      await openFile(info.filePath);
+      const position = findTemplatePosition(el, el);
+      await openFileWithSearch(target.templateUrl, position.searchTerms);
     }
+  };
+
+  try {
+    await open(info);
   } catch (e) {
     if (OPTIONS.debug) {
       console.warn('[angular-locator] File opening failed, refreshing component map:', e);
@@ -488,18 +833,17 @@ async function handleAltOpen(ev: MouseEvent | PointerEvent, el: Element) {
 
     await refreshComponentMap();
 
-    const newCmp = getNearestComponent(el);
-    const newInfo: CmpInfo | undefined = newCmp?.__cmpInfo;
+    const newInfo = getNearestComponent(el)?.info;
 
     if (newInfo) {
       showClickFeedback(ev.clientX, ev.clientY, 'Retrying with updated map...');
-      if (ev.shiftKey) {
-        await openFile(newInfo.filePath);
-      } else if (newInfo.templateUrl) {
-        const position = findTemplatePosition(el, el);
-        await openFileWithSearch(newInfo.templateUrl, position.searchTerms);
-      } else {
-        await openFile(newInfo.filePath);
+      try {
+        await open(newInfo);
+      } catch (retryError) {
+        if (OPTIONS.debug) {
+          console.warn('[angular-locator] Retry failed:', retryError);
+        }
+        showClickFeedback(ev.clientX, ev.clientY, 'Failed to open file');
       }
     } else {
       showClickFeedback(ev.clientX, ev.clientY, 'Component not found in updated map');
@@ -507,9 +851,9 @@ async function handleAltOpen(ev: MouseEvent | PointerEvent, el: Element) {
   }
 }
 
-async function handleAltClick(ev: MouseEvent) {
+async function handleClick(ev: MouseEvent) {
   if (!OPTIONS.enableClick) return;
-  if (!ev.altKey) return;
+  if (!modifiersPressed(ev, OPTIONS.modifier)) return;
 
   ev.preventDefault();
   ev.stopPropagation();
@@ -517,74 +861,131 @@ async function handleAltClick(ev: MouseEvent) {
   const el = ev.target as Element | null;
   if (!el) return;
 
-  await handleAltOpen(ev, el);
+  await handleOpen(ev, el);
 }
 
-let isAltPressed = false;
+/**
+ * On macOS, Ctrl+click opens the context menu and no click event follows,
+ * so a modifier that includes Ctrl is handled through `contextmenu` there.
+ */
+async function handleContextMenu(ev: MouseEvent) {
+  if (!OPTIONS.enableClick) return;
+  if (!ev.ctrlKey || !isMacPlatform()) return;
+  if (!modifiersPressed(ev, OPTIONS.modifier)) return;
+
+  ev.preventDefault();
+  ev.stopPropagation();
+
+  const el = ev.target as Element | null;
+  if (!el) return;
+
+  await handleOpen(ev, el);
+}
+
+type PointerState = { target: Element; x: number; y: number };
+
+let hoverActive = false;
+/** Latest pointer position, so holding the modifier highlights without moving the mouse. */
+let lastPointer: PointerState | null = null;
 let currentTooltip: HTMLElement | null = null;
 let currentHighlightOverlay: HTMLElement | null = null;
-let lastHighlightedElement: Element | null = null;
+let currentTargetOverlay: HTMLElement | null = null;
+let lastRenderKey: { target: Element; componentMode: boolean } | null = null;
 
 function removeHighlights() {
-  if (currentHighlightOverlay) {
-    currentHighlightOverlay.remove();
-    currentHighlightOverlay = null;
-  }
-  if (currentTooltip) {
-    currentTooltip.remove();
-    currentTooltip = null;
-  }
+  currentHighlightOverlay?.remove();
+  currentHighlightOverlay = null;
+  currentTargetOverlay?.remove();
+  currentTargetOverlay = null;
+  currentTooltip?.remove();
+  currentTooltip = null;
+  lastRenderKey = null;
 }
 
-async function handleMouseMove(ev: MouseEvent) {
-  if (!OPTIONS.enableHover) return;
-  if (!isAltPressed || !ev.altKey) {
-    if (isAltPressed && !ev.altKey) {
-      isAltPressed = false;
-      document.removeEventListener('mousemove', handleMouseMove);
-      removeHighlights();
-    }
-    return;
+function deactivateHover() {
+  hoverActive = false;
+  removeHighlights();
+}
+
+function createOverlay(className: string, rect: DOMRect): HTMLElement {
+  const overlay = document.createElement('div');
+  overlay.className = className;
+  overlay.style.left = rect.left + 'px';
+  overlay.style.top = rect.top + 'px';
+  overlay.style.width = rect.width + 'px';
+  overlay.style.height = rect.height + 'px';
+  document.body.appendChild(overlay);
+  return overlay;
+}
+
+function buildTooltip(cmp: LocatorComponent, componentMode: boolean): HTMLElement {
+  const { className, info } = cmp;
+  const opensTemplate = !componentMode && Boolean(info.templateUrl);
+  const targetPath = opensTemplate ? info.templateUrl! : info.filePath;
+
+  const hints: string[] = [];
+  if (info.templateUrl) hints.push('Click: template');
+  else hints.push('Click: .ts');
+  if (info.templateUrl && OPTIONS.componentModifier.length > 0) {
+    hints.push(`${formatModifiers(OPTIONS.componentModifier)}+Click: .ts`);
   }
 
-  if (!CMP_MAP) {
-    ensureMapIfNeeded();
+  const tooltip = document.createElement('div');
+  tooltip.className = 'dev-tooltip';
+  const rows: Array<[string, string]> = [
+    ['dev-tooltip-name', className],
+    ['dev-tooltip-path', shortenPath(targetPath)],
+    ['dev-tooltip-hint', hints.join(' • ')],
+  ];
+  for (const [rowClass, text] of rows) {
+    const row = document.createElement('div');
+    row.className = rowClass;
+    row.textContent = text;
+    tooltip.appendChild(row);
+  }
+  return tooltip;
+}
+
+function renderHover(pointer: PointerState, componentMode: boolean) {
+  if (
+    lastRenderKey &&
+    lastRenderKey.target === pointer.target &&
+    lastRenderKey.componentMode === componentMode
+  ) {
     return;
   }
-
-  const el = ev.target as Element;
-  if (lastHighlightedElement === el) return;
-  lastHighlightedElement = el;
 
   removeHighlights();
+  lastRenderKey = { target: pointer.target, componentMode };
 
-  const cmp = getNearestComponent(el);
+  const cmp = getNearestComponent(pointer.target);
   if (!cmp) return;
-
-  const className = cmp.constructor?.name;
-  const info: CmpInfo | undefined = cmp.__cmpInfo;
-  if (!className || !info) return;
+  if (cmp.pending) {
+    // Re-render with the resolved template path if the pointer is still there.
+    void cmp.pending.then(() => {
+      if (hoverActive && lastPointer?.target === pointer.target) {
+        lastRenderKey = null;
+        renderHover(lastPointer, componentMode);
+      }
+    });
+  }
 
   try {
-    const rect = el.getBoundingClientRect();
-
-    const overlay = document.createElement('div');
-    overlay.className = 'dev-highlight-overlay';
-    overlay.style.left = rect.left + 'px';
-    overlay.style.top = rect.top + 'px';
-    overlay.style.width = rect.width + 'px';
-    overlay.style.height = rect.height + 'px';
-
-    document.body.appendChild(overlay);
-    currentHighlightOverlay = overlay;
+    // Outline the whole component so it is clear which file a click opens,
+    // and mark the hovered element the template search will look for.
+    const host = cmp.hostElement ?? pointer.target;
+    currentHighlightOverlay = createOverlay('dev-highlight-overlay', host.getBoundingClientRect());
+    if (host !== pointer.target) {
+      currentTargetOverlay = createOverlay(
+        'dev-highlight-target',
+        pointer.target.getBoundingClientRect(),
+      );
+    }
 
     if (OPTIONS.showTooltip) {
-      const tooltip = document.createElement('div');
-      tooltip.className = 'dev-tooltip';
-      tooltip.textContent = `${className} • Click: template • Shift+Click: .ts`;
-      tooltip.style.left = ev.clientX + 10 + 'px';
-      tooltip.style.top = ev.clientY - 30 + 'px';
-
+      const tooltip = buildTooltip(cmp, componentMode);
+      tooltip.style.left = pointer.x + 10 + 'px';
+      tooltip.style.top = pointer.y + 14 + 'px';
       document.body.appendChild(tooltip);
       currentTooltip = tooltip;
     }
@@ -595,21 +996,42 @@ async function handleMouseMove(ev: MouseEvent) {
   }
 }
 
-function handleKeyDown(ev: KeyboardEvent) {
+/** Shows or hides the hover UI for the current modifier state. */
+async function updateHover(ev: MouseEvent | KeyboardEvent) {
   if (!OPTIONS.enableHover) return;
-  if ((ev.key === 'Alt' || ev.key === 'AltGraph') && !isAltPressed) {
-    isAltPressed = true;
-    document.addEventListener('mousemove', handleMouseMove);
+
+  if (!modifiersPressed(ev, OPTIONS.modifier)) {
+    if (hoverActive) deactivateHover();
+    return;
   }
+  hoverActive = true;
+  if (!lastPointer) return;
+
+  const componentMode = isComponentModifierPressed(ev);
+  if (!CMP_MAP && !getNearestComponent(lastPointer.target)) {
+    // Components without debug info need the map; load it, then render.
+    try {
+      await ensureMapOnce();
+    } catch {
+      return;
+    }
+    // The modifier may have been released while the map was loading.
+    if (!hoverActive || !lastPointer) return;
+  }
+
+  renderHover(lastPointer, componentMode);
 }
 
-function handleKeyUp(ev: KeyboardEvent) {
-  if (!OPTIONS.enableHover) return;
-  if ((ev.key === 'Alt' || ev.key === 'AltGraph' || !ev.altKey) && isAltPressed) {
-    isAltPressed = false;
-    document.removeEventListener('mousemove', handleMouseMove);
-    removeHighlights();
-  }
+function handleMouseMove(ev: MouseEvent) {
+  const target = ev.target;
+  if (!(target instanceof Element)) return;
+  lastPointer = { target, x: ev.clientX, y: ev.clientY };
+  if (!hoverActive && !modifiersPressed(ev, OPTIONS.modifier)) return;
+  void updateHover(ev);
+}
+
+function handleKeyChange(ev: KeyboardEvent) {
+  void updateHover(ev);
 }
 
 async function installInternal(options: ResolvedOptions) {
@@ -634,11 +1056,15 @@ async function installInternal(options: ResolvedOptions) {
   }
 
   if (OPTIONS.enableClick) {
-    document.addEventListener('click', handleAltClick, true);
+    document.addEventListener('click', handleClick, true);
+    if (OPTIONS.modifier.includes('ctrl')) {
+      document.addEventListener('contextmenu', handleContextMenu, true);
+    }
   }
   if (OPTIONS.enableHover) {
-    document.addEventListener('keydown', handleKeyDown);
-    document.addEventListener('keyup', handleKeyUp);
+    document.addEventListener('mousemove', handleMouseMove, { passive: true });
+    document.addEventListener('keydown', handleKeyChange);
+    document.addEventListener('keyup', handleKeyChange);
   }
 
   window.addEventListener(
@@ -657,10 +1083,7 @@ async function installInternal(options: ResolvedOptions) {
     }
   });
 
-  window.addEventListener('blur', () => {
-    isAltPressed = false;
-    removeHighlights();
-  });
+  window.addEventListener('blur', deactivateHover);
 }
 
 export async function installAngularLocator(options: AngularLocatorOptions = {}) {
@@ -669,6 +1092,12 @@ export async function installAngularLocator(options: AngularLocatorOptions = {})
   const mergedOptions: ResolvedOptions = {
     ...DEFAULT_OPTIONS,
     ...options,
+    ...resolveModifierOptions(options),
+    // Explicit `endpoints` mean a proxy setup: keep it unless openerUrl is also given.
+    openerUrl:
+      options.openerUrl === false
+        ? null
+        : (options.openerUrl ?? (options.endpoints ? null : DEFAULT_OPENER_URL)),
     authToken: options.authToken ?? DEFAULT_OPTIONS.authToken,
     endpoints: {
       ...DEFAULT_ENDPOINTS,
@@ -700,4 +1129,8 @@ export function isAngularLocatorInstalled() {
 
 export const _internal = {
   ensureMap,
+  parseModifiers,
+  resolveModifierOptions,
+  modifiersPressed,
+  shortenPath,
 };

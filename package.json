@@ -1,6 +1,6 @@
 {
   "name": "ngx-locatorjs",
-  "version": "0.5.1",
+  "version": "1.0.0",
   "description": "LocatorJs open-in-editor tools for Angular projects",
   "keywords": [
     "angular",
@@ -22,7 +22,8 @@
   "bin": {
     "locatorjs-config": "dist/node/config-setup.js",
     "locatorjs-open-in-editor": "dist/node/file-opener.js",
-    "locatorjs-scan": "dist/node/cmp-scan.js"
+    "locatorjs-scan": "dist/node/cmp-scan.js",
+    "ngx-locatorjs": "dist/node/cli.js"
   },
   "files": [
     "dist",
@@ -31,6 +32,13 @@
   "type": "module",
   "main": "dist/browser/index.js",
   "types": "dist/browser/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "auto": [
+        "dist/browser/auto.d.ts"
+      ]
+    }
+  },
   "exports": {
     ".": {
       "types": "./dist/browser/index.d.ts",
@@ -64,5 +72,11 @@
     "oxfmt": "^0.35.0",
     "playwright": "^1.61.0",
     "typescript": "^5.5.4"
+  },
+  "peerDependencies": {
+    "typescript": ">=4.2"
+  },
+  "engines": {
+    "node": "18 || 20 || >=22"
   }
 }

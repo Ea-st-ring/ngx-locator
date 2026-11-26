@@ -1,13 +1,16 @@
 #!/usr/bin/env node
-import ts from 'typescript';
 import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
+import { parseComponentSource } from './component-source.js';
 
 type CmpInfo = {
   className: string;
   filePath: string;
   templateUrl?: string;
+  /** 1-based line of the class; absent in maps written by older versions. */
+  line?: number;
+  selector?: string;
 };
 
 type MapFile = {
@@ -22,7 +25,7 @@ type ScanCacheEntry = {
 };
 
 type ScanCache = {
-  version: 2;
+  version: 3;
   files: Record<string, ScanCacheEntry>;
 };
 
@@ -83,86 +86,6 @@ function prefixWorkspaceRoot(globPattern: string, workspaceRoot: string): string
   return `${rootPosix}/${globPosix}`;
 }
 
-function extractTemplateUrl(node: ts.ObjectLiteralExpression): string | undefined {
-  for (const prop of node.properties) {
-    if (
-      ts.isPropertyAssignment(prop) &&
-      ts.isIdentifier(prop.name) &&
-      prop.name.text === 'templateUrl'
-    ) {
-      const initializer = prop.initializer;
-      if (ts.isStringLiteral(initializer)) {
-        return initializer.text;
-      }
-    }
-  }
-  return undefined;
-}
-
-function getDecorators(node: ts.Node): readonly ts.Decorator[] {
-  const modernTs = ts as typeof ts & {
-    canHaveDecorators?: (node: ts.Node) => boolean;
-    getDecorators?: (node: ts.Node) => readonly ts.Decorator[] | undefined;
-  };
-
-  if (modernTs.canHaveDecorators?.(node) && modernTs.getDecorators) {
-    return modernTs.getDecorators(node) ?? [];
-  }
-
-  const legacyNode = node as ts.Node & {
-    decorators?: ts.NodeArray<ts.Decorator>;
-    modifiers?: ts.NodeArray<ts.ModifierLike>;
-  };
-  return legacyNode.decorators ?? legacyNode.modifiers?.filter(ts.isDecorator) ?? [];
-}
-
-function findComponentDecorator(node: ts.ClassDeclaration): ts.Decorator | undefined {
-  for (const decorator of getDecorators(node)) {
-    const expr = decorator.expression;
-    if (ts.isCallExpression(expr) && ts.isIdentifier(expr.expression)) {
-      if (expr.expression.text === 'Component') {
-        return decorator;
-      }
-    }
-  }
-  return undefined;
-}
-
-function parseSourceFile(filePath: string, sourceCode: string): CmpInfo[] {
-  const sourceFile = ts.createSourceFile(filePath, sourceCode, ts.ScriptTarget.Latest, true);
-
-  const components: CmpInfo[] = [];
-
-  function visit(node: ts.Node) {
-    if (ts.isClassDeclaration(node) && node.name) {
-      const componentDecorator = findComponentDecorator(node);
-      if (componentDecorator) {
-        const expr = componentDecorator.expression as ts.CallExpression;
-        const firstArg = expr.arguments[0];
-
-        if (firstArg && ts.isObjectLiteralExpression(firstArg)) {
-          const templateUrl = extractTemplateUrl(firstArg);
-          const className = node.name.text;
-
-          const absTs = path.resolve(root, filePath);
-          const absTpl = templateUrl ? path.resolve(path.dirname(absTs), templateUrl) : undefined;
-
-          components.push({
-            className,
-            filePath: absTs,
-            templateUrl: absTpl,
-          });
-        }
-      }
-    }
-
-    ts.forEachChild(node, visit);
-  }
-
-  visit(sourceFile);
-  return components;
-}
-
 async function main() {
   const cfg = readConfig();
 
@@ -180,20 +103,21 @@ async function main() {
   function loadCache(): ScanCache {
     try {
       const raw = JSON.parse(fs.readFileSync(cacheFile, 'utf8')) as unknown;
-      if (!raw || typeof raw !== 'object') return { version: 2, files: {} };
+      if (!raw || typeof raw !== 'object') return { version: 3, files: {} };
 
       const typed = raw as Partial<ScanCache>;
-      if (typed.version === 2 && typed.files && typeof typed.files === 'object') {
+      if (typed.version === 3 && typed.files && typeof typed.files === 'object') {
         return {
-          version: 2,
+          version: 3,
           files: typed.files,
         };
       }
 
-      // Backward compatibility for old cache shape: { [filePath]: mtimeMs }
+      // Older caches (v2, or the legacy { [filePath]: mtimeMs } shape) lack fields such as
+      // selector/line, so every file is reparsed once.
       const files: Record<string, ScanCacheEntry> = {};
       for (const [filePath, mtime] of Object.entries(raw as Record<string, unknown>)) {
-        if (typeof mtime === 'number') {
+        if (typeof mtime === 'number' && filePath !== 'version') {
           files[filePath] = {
             // Force one-time reparsing after legacy-cache migration.
             mtimeMs: -1,
@@ -201,9 +125,9 @@ async function main() {
           };
         }
       }
-      return { version: 2, files };
+      return { version: 3, files };
     } catch {
-      return { version: 2, files: {} };
+      return { version: 3, files: {} };
     }
   }
 
@@ -263,7 +187,7 @@ async function main() {
     }
 
     const sourceCode = fs.readFileSync(filePath, 'utf8');
-    const components = parseSourceFile(filePath, sourceCode);
+    const components = parseComponentSource(path.resolve(root, filePath), sourceCode);
     nextFiles[filePath] = {
       mtimeMs: currentMtime,
       components,
@@ -295,7 +219,7 @@ async function main() {
   fs.writeFileSync(outFile, JSON.stringify(out, null, 2));
 
   saveCache({
-    version: 2,
+    version: 3,
     files: nextFiles,
   });
   console.log(
