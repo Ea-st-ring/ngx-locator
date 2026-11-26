@@ -413,6 +413,49 @@ function extractRequestToken(req: http.IncomingMessage, url: URL): string | null
   return null;
 }
 
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  return (
+    normalized === 'localhost' ||
+    normalized.endsWith('.localhost') ||
+    normalized === '::1' ||
+    /^127(\.\d{1,3}){3}$/.test(normalized)
+  );
+}
+
+function hostnameOf(value: string | undefined): string | null {
+  if (!value) return null;
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return null;
+  }
+}
+
+const BIND_IS_LOOPBACK = isLoopbackHostname(HOST);
+
+/**
+ * Blocks requests a browser makes on behalf of another website.
+ * The dev-server proxy injects the auth token, so a page on any site could otherwise
+ * trigger opener routes through it (e.g. with an <img> tag). The proxy forwards the
+ * browser's Sec-Fetch-Site / Origin / Referer headers, which identify such requests.
+ * The Host check rejects DNS-rebinding requests when the opener only listens on loopback.
+ */
+function getRejectionReason(req: http.IncomingMessage): string | null {
+  if (BIND_IS_LOOPBACK) {
+    const host = hostnameOf(`http://${req.headers.host ?? ''}`);
+    if (!host || !isLoopbackHostname(host)) return 'unexpected Host header';
+  }
+
+  if (req.headers['sec-fetch-site'] === 'cross-site') {
+    const source = hostnameOf(req.headers.origin) ?? hostnameOf(req.headers.referer);
+    // Pages served from this machine (e.g. localhost:4200 calling 127.0.0.1:4123) are allowed.
+    if (!source || !isLoopbackHostname(source)) return 'cross-site request blocked';
+  }
+
+  return null;
+}
+
 function ensureAuthorized(req: http.IncomingMessage, url: URL): boolean {
   if (!AUTH_TOKEN) return true;
 
@@ -473,6 +516,14 @@ const server = http.createServer(async (req, res) => {
 
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = url.pathname;
+
+  const rejectionReason = getRejectionReason(req);
+  if (rejectionReason) {
+    console.log(`[file-opener] Rejected ${pathname}: ${rejectionReason}`);
+    res.statusCode = 403;
+    res.end('Forbidden');
+    return;
+  }
 
   if (!ensureAuthorized(req, url)) {
     res.statusCode = 401;

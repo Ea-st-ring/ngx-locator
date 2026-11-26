@@ -88,3 +88,35 @@ test('files that do not exist are rejected with 403', async (t) => {
   const res = await request('/__open-in-editor', { file: 'src/missing.html' });
   assert.equal(res.status, 403);
 });
+
+test('cross-site browser requests are rejected, including through the proxy', async (t) => {
+  const { request } = await startOpener(t, `${process.execPath} -e 0`);
+
+  const fromOtherSite = await request(
+    '/__open-in-editor',
+    { file: 'src/a.html' },
+    { 'sec-fetch-site': 'cross-site', referer: 'https://evil.example/page' },
+  );
+  assert.equal(fromOtherSite.status, 403);
+
+  const fromLocalPage = await request(
+    '/__open-in-editor',
+    { file: 'src/a.html' },
+    { 'sec-fetch-site': 'cross-site', origin: 'http://localhost:4200' },
+  );
+  assert.equal(fromLocalPage.status, 200);
+
+  const sameOrigin = await request(
+    '/__open-in-editor',
+    { file: 'src/a.html' },
+    { 'sec-fetch-site': 'same-origin', origin: 'http://192.168.0.10:4200' },
+  );
+  assert.equal(sameOrigin.status, 200);
+});
+
+test('requests with a non-loopback Host header are rejected (DNS rebinding)', async (t) => {
+  const { request } = await startOpener(t, `${process.execPath} -e 0`);
+
+  const res = await request('/__cmp-map', {}, { host: 'rebind.evil.example:4123' });
+  assert.equal(res.status, 403);
+});
