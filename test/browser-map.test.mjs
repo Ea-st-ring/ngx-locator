@@ -19,7 +19,8 @@ await mod.installAngularLocator({ enableNetwork: true, prefetchMap: false });
 
 function stubFetch(t, status, body) {
   const original = globalThis.fetch;
-  globalThis.fetch = async () => new Response(body, { status });
+  globalThis.fetch = async () =>
+    new Response(body, { status, headers: { 'X-Locatorjs-Opener': '1' } });
   t.after(() => {
     globalThis.fetch = original;
   });

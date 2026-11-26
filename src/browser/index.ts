@@ -57,6 +57,12 @@ export type AngularLocatorEndpoints = {
 export type AngularLocatorOptions = {
   endpoints?: Partial<AngularLocatorEndpoints>;
   enableNetwork?: boolean;
+  /**
+   * Where the opener server listens. The runtime calls it directly (CORS), so no dev-server
+   * proxy is needed. `false` uses only the same-origin proxy routes in `endpoints`.
+   * Default: `'http://127.0.0.1:4123'`, or `false` when `endpoints` is given.
+   */
+  openerUrl?: string | false;
   prefetchMap?: boolean;
   enableHover?: boolean;
   enableClick?: boolean;
@@ -78,6 +84,8 @@ export type AngularLocatorOptions = {
 
 type ResolvedOptions = {
   endpoints: AngularLocatorEndpoints;
+  /** null: proxy routes only. */
+  openerUrl: string | null;
   enableNetwork: boolean;
   prefetchMap: boolean;
   enableHover: boolean;
@@ -99,8 +107,11 @@ const DEFAULT_ENDPOINTS: AngularLocatorEndpoints = {
   resolveComponent: '/__open-in-editor-resolve',
 };
 
+const DEFAULT_OPENER_URL = 'http://127.0.0.1:4123';
+
 const DEFAULT_OPTIONS: ResolvedOptions = {
   endpoints: DEFAULT_ENDPOINTS,
+  openerUrl: DEFAULT_OPENER_URL,
   enableNetwork: false,
   prefetchMap: true,
   enableHover: true,
@@ -251,21 +262,69 @@ function assertNetworkAllowed(url: string): string {
   return resolved.toString();
 }
 
-function attachAuthToken(url: string): string {
-  if (!OPTIONS.authToken) return url;
+/**
+ * How the runtime reaches the opener: directly at `openerUrl`, or through same-origin
+ * routes forwarded by a dev-server proxy (the older setup). Chosen on the first request
+ * that reaches an opener, then reused.
+ */
+type Transport = 'direct' | 'proxy';
+let activeTransport: Transport | null = null;
 
-  const resolved = new URL(url, window.location.href);
-  if (!resolved.searchParams.has('token')) {
-    resolved.searchParams.set('token', OPTIONS.authToken);
-  }
-  return resolved.toString();
+function getTransports(): Transport[] {
+  if (activeTransport) return [activeTransport];
+  return OPTIONS.openerUrl ? ['direct', 'proxy'] : ['proxy'];
 }
 
-function getAuthHeaders(): HeadersInit | undefined {
-  if (!OPTIONS.authToken) return undefined;
-  return {
-    'x-locatorjs-token': OPTIONS.authToken,
-  };
+function buildOpenerUrl(
+  transport: Transport,
+  endpoint: keyof AngularLocatorEndpoints,
+  query: Record<string, string>,
+): string {
+  const base = transport === 'direct' ? OPTIONS.openerUrl! : window.location.href;
+  const url = new URL(OPTIONS.endpoints[endpoint], base);
+  for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
+  if (OPTIONS.authToken && !url.searchParams.has('token')) {
+    url.searchParams.set('token', OPTIONS.authToken);
+  }
+  return assertNetworkAllowed(url.toString());
+}
+
+/**
+ * Calls an opener route. Every request carries `x-locatorjs-request`, which the opener
+ * requires: other sites cannot add it without a CORS preflight the opener refuses.
+ * Resolves with the opener's response (any status); rejects when no opener is reachable.
+ */
+async function openerFetch(
+  endpoint: keyof AngularLocatorEndpoints,
+  query: Record<string, string>,
+): Promise<Response> {
+  let lastError: unknown = new Error('Opener not reachable');
+  for (const transport of getTransports()) {
+    let res: Response;
+    try {
+      res = await fetch(buildOpenerUrl(transport, endpoint, query), {
+        cache: 'no-store',
+        headers: {
+          'x-locatorjs-request': '1',
+          ...(OPTIONS.authToken ? { 'x-locatorjs-token': OPTIONS.authToken } : {}),
+        },
+      });
+    } catch (e) {
+      lastError = e;
+      continue;
+    }
+    // Something else may answer on the port or the proxy path (e.g. the dev server's 404).
+    if (!res.headers.get('x-locatorjs-opener')) {
+      lastError = new Error(`No opener at ${transport} endpoint (HTTP ${res.status})`);
+      continue;
+    }
+    if (activeTransport !== transport && OPTIONS.debug) {
+      console.log(`[angular-locator] Using ${transport} connection to the opener`);
+    }
+    activeTransport = transport;
+    return res;
+  }
+  throw lastError;
 }
 
 function normalizeMap(map: CmpMap): CmpMap {
@@ -284,19 +343,7 @@ function normalizeMap(map: CmpMap): CmpMap {
 async function ensureMap(forceRefresh = false): Promise<CmpMap> {
   if (CMP_MAP && !forceRefresh) return CMP_MAP;
 
-  const timestamp = Date.now();
-  const res = await fetch(
-    attachAuthToken(assertNetworkAllowed(`${OPTIONS.endpoints.componentMap}?t=${timestamp}`)),
-    {
-      cache: 'no-store',
-      headers: {
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        Pragma: 'no-cache',
-        Expires: '0',
-        ...getAuthHeaders(),
-      },
-    },
-  );
+  const res = await openerFetch('componentMap', { t: String(Date.now()) });
 
   const text = await res.text();
   if (!res.ok) {
@@ -483,12 +530,10 @@ function resolveDebugInfo(debugInfo: ClassDebugInfo & { filePath: string }) {
   if (pending) return pending;
 
   const promise = (async (): Promise<CmpInfo | null> => {
-    const url = attachAuthToken(
-      assertNetworkAllowed(
-        `${OPTIONS.endpoints.resolveComponent}?file=${encodeURIComponent(debugInfo.filePath)}&className=${encodeURIComponent(debugInfo.className)}`,
-      ),
-    );
-    const res = await fetch(url, { headers: getAuthHeaders() });
+    const res = await openerFetch('resolveComponent', {
+      file: debugInfo.filePath,
+      className: debugInfo.className,
+    });
     if (!res.ok) {
       // e.g. an older opener without this route: fall back to the component map.
       if (OPTIONS.debug) {
@@ -589,8 +634,11 @@ async function findNearestComponent(el: Element): Promise<LocatorComponent | nul
  * Sends an open request and throws on network errors and non-2xx responses,
  * so callers can react (e.g. refresh a stale component map).
  */
-async function requestOpen(url: string) {
-  const res = await fetch(url, { headers: getAuthHeaders() });
+async function requestOpen(
+  endpoint: 'openInEditor' | 'openInEditorSearch',
+  query: Record<string, string>,
+) {
+  const res = await openerFetch(endpoint, query);
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     throw new Error(`Open request failed (HTTP ${res.status}): ${body}`);
@@ -598,24 +646,15 @@ async function requestOpen(url: string) {
 }
 
 async function openFile(absPath: string, line = 1, col = 1) {
-  const url = attachAuthToken(
-    assertNetworkAllowed(
-      `${OPTIONS.endpoints.openInEditor}?file=${encodeURIComponent(absPath)}&line=${line}&col=${col}`,
-    ),
-  );
-  await requestOpen(url);
+  await requestOpen('openInEditor', { file: absPath, line: String(line), col: String(col) });
 }
 
 async function openFileWithSearch(absPath: string, searchTerms: string[]) {
-  const url = attachAuthToken(
-    assertNetworkAllowed(
-      `${OPTIONS.endpoints.openInEditorSearch}?file=${encodeURIComponent(absPath)}&search=${encodeURIComponent(
-        JSON.stringify(searchTerms),
-      )}`,
-    ),
-  );
   try {
-    await requestOpen(url);
+    await requestOpen('openInEditorSearch', {
+      file: absPath,
+      search: JSON.stringify(searchTerms),
+    });
   } catch (e) {
     if (OPTIONS.debug) {
       console.warn('[angular-locator] Search failed, opening without search:', e);
@@ -1054,6 +1093,11 @@ export async function installAngularLocator(options: AngularLocatorOptions = {})
     ...DEFAULT_OPTIONS,
     ...options,
     ...resolveModifierOptions(options),
+    // Explicit `endpoints` mean a proxy setup: keep it unless openerUrl is also given.
+    openerUrl:
+      options.openerUrl === false
+        ? null
+        : (options.openerUrl ?? (options.endpoints ? null : DEFAULT_OPENER_URL)),
     authToken: options.authToken ?? DEFAULT_OPTIONS.authToken,
     endpoints: {
       ...DEFAULT_ENDPOINTS,

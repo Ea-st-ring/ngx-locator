@@ -52,7 +52,7 @@ const PAGE = `<!doctype html>
   };
   const options = JSON.parse(new URLSearchParams(location.search).get('options') || '{}');
   const { installAngularLocator } = await import('/locator.js');
-  await installAngularLocator({ enableNetwork: true, showClickFeedback: false, ...options });
+  await installAngularLocator({ enableNetwork: true, openerUrl: false, showClickFeedback: false, ...options });
   window.__locatorReady = true;
 </script>
 </body></html>`;
@@ -62,6 +62,8 @@ async function startServer(t, { page = PAGE, map = CMP_MAP } = {}) {
   const locatorJs = fs.readFileSync(path.join(repoRoot, 'dist/browser/index.js'));
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
+    // Stands in for the opener behind a dev-server proxy (same-origin routes).
+    if (url.pathname.startsWith('/__')) res.setHeader('X-Locatorjs-Opener', '1');
     if (url.pathname === '/locator.js') {
       res.setHeader('Content-Type', 'text/javascript');
       return res.end(locatorJs);
@@ -244,7 +246,7 @@ const SAME_NAME_PAGE = `<!doctype html>
       document.querySelector([...cards].find(([, c]) => c === cmp)[0].toLowerCase()),
   };
   const { installAngularLocator } = await import('/locator.js');
-  await installAngularLocator({ enableNetwork: true, showClickFeedback: false });
+  await installAngularLocator({ enableNetwork: true, openerUrl: false, showClickFeedback: false });
   window.__locatorReady = true;
 </script>
 </body></html>`;
@@ -333,7 +335,7 @@ const ATTRIBUTE_SELECTOR_PAGE = `<!doctype html>
     getHostElement: (cmp) => hosts.get(cmp) ?? null,
   };
   const { installAngularLocator } = await import('/locator.js');
-  await installAngularLocator({ enableNetwork: true, showClickFeedback: false });
+  await installAngularLocator({ enableNetwork: true, openerUrl: false, showClickFeedback: false });
   window.__locatorReady = true;
 </script>
 </body></html>`;
