@@ -39,7 +39,7 @@ You must complete steps 1–4 for this to work.
 3. Add the runtime hook to `main.ts` (see the examples below)
 4. Run the file-opener server and your dev server (keep both running): `npx locatorjs-open-in-editor --watch` + `ng serve --proxy-config ngx-locatorjs.proxy.cjs`
 
-If you are upgrading from an older version, run `npx locatorjs-config` again so `authToken` and proxy headers are generated, then use `ngx-locatorjs.proxy.cjs` in your `--proxy-config` or `angular.json`.
+If you are upgrading from an older version, run `npx locatorjs-config` again so the auth token and proxy headers are generated, then use `ngx-locatorjs.proxy.cjs` in your `--proxy-config` or `angular.json`.
 
 ## Add to `main.ts`
 
@@ -100,7 +100,7 @@ Location: project root
 - `npx locatorjs-config` uses the **current directory** as the base.
 - Defaults: `host: "127.0.0.1"`, `port: 4123`, `workspaceRoot: "."`.
 - In a monorepo, update `workspaceRoot` to the **relative path** of your Angular app (e.g. `apps/web`).
-- If `.gitignore` exists, `npx locatorjs-config` will append `.open-in-editor/`. Remove it if you want to commit the map.
+- If `.gitignore` exists, `npx locatorjs-config` will append `.open-in-editor/`. Remove it if you want to commit the map (the auth token stays ignored via `.open-in-editor/.gitignore`).
 
 Example:
 
@@ -111,7 +111,6 @@ Example:
   "workspaceRoot": ".",
   "editor": "cursor",
   "fallbackEditor": "code",
-  "authToken": "generated-by-locatorjs-config",
   "scan": {
     "includeGlobs": [
       "src/**/*.{ts,tsx,js,jsx}",
@@ -139,14 +138,18 @@ Example:
 - `workspaceRoot`: Angular workspace root path (relative to where you run commands).
 - `editor`: Preferred editor (`cursor`, `code`, `webstorm`).
 - `fallbackEditor`: Fallback editor if the preferred editor cannot be launched.
-- `authToken`: Request token validated by the open-in-editor server. Generated automatically by `locatorjs-config`.
+- `authToken` (legacy, optional): Overrides the token in `.open-in-editor/auth-token`. Not written by `locatorjs-config` anymore; avoid committing it.
 - `scan.includeGlobs`: Globs used to find component source files.
 - `scan.excludeGlobs`: Globs excluded from component scanning.
 
-### authToken Behavior (0.5.0)
+### Auth Token & Request Protection
 
-- `locatorjs-config` generates a per-project `authToken` in `ngx-locatorjs.config.json`.
+- `locatorjs-config` generates a per-machine token in `.open-in-editor/auth-token` (gitignored), so `ngx-locatorjs.config.json` contains no secret and can be committed and shared.
+- Teammates using a shared config: run `npx locatorjs-config` and answer `N` to keep the config; it only creates the local token.
+- Token precedence (opener and proxy): `OPEN_IN_EDITOR_TOKEN` env > `authToken` in config (legacy) > `.open-in-editor/auth-token`.
 - `ngx-locatorjs.proxy.cjs` reads that token and forwards it as `x-locatorjs-token` to opener routes.
+- Because the proxy adds the token for every request, the opener also rejects requests a browser makes on behalf of another website (`Sec-Fetch-Site: cross-site` from a non-localhost origin) and requests whose `Host` is not a loopback address while it listens on loopback (DNS rebinding).
+- If you run `ng serve --host 0.0.0.0`, anyone who can reach the dev server can use the opener routes through the proxy. Only do this on trusted networks.
 - If you skip Angular proxy and call opener endpoints directly, pass `authToken` to `installAngularLocator(...)` so requests are authorized.
 - If token mismatch occurs (`401 Unauthorized`), regenerate config/proxy: `npx locatorjs-config`.
 
@@ -194,7 +197,7 @@ module.exports = {
 - **Wrong files open or nothing matches**: confirm `workspaceRoot` points to the actual Angular app root
 - **No highlight / info is null**: make sure `http://localhost:${port}/__cmp-map` is loading and includes your component class name
 - **Port conflict**: change `port` in `ngx-locatorjs.config.json` only
-- **401 Unauthorized from opener routes**: regenerate config/proxy (`npx locatorjs-config`) or pass `authToken` to `installAngularLocator` if you call the opener without Angular proxy headers
+- **401 Unauthorized from opener routes**: create the local token (`npx locatorjs-config`, answer `N` to keep an existing config) and restart the dev server or pass `authToken` to `installAngularLocator` if you call the opener without Angular proxy headers
 
 ## Notes
 

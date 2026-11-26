@@ -21,7 +21,7 @@ Angular 인기가 적어서인지 [LocatorJs](https://www.locatorjs.com/)와 같
 3. `main.ts`에 런타임 훅 추가 (아래 예시 참고)
 4. 파일 오프너 서버 + dev 서버 실행 (둘 다 켜진 상태 유지): `npx locatorjs-open-in-editor --watch` + `ng serve --proxy-config ngx-locatorjs.proxy.cjs`
 
-기존 0.3.0 버전에서 업그레이드했다면 `npx locatorjs-config`를 다시 실행해 `authToken`과 proxy 헤더를 재생성하고, `--proxy-config`(또는 `angular.json`)를 `ngx-locatorjs.proxy.cjs`로 맞추세요.
+기존 0.3.0 버전에서 업그레이드했다면 `npx locatorjs-config`를 다시 실행해 인증 토큰과 proxy 헤더를 재생성하고, `--proxy-config`(또는 `angular.json`)를 `ngx-locatorjs.proxy.cjs`로 맞추세요.
 
 **Angular 코드 추가 (main.ts)**
 
@@ -99,7 +99,7 @@ bootstrapApplication(AppComponent, appConfig)
 - `npx locatorjs-config`는 **실행한 현재 폴더를 기준**으로 설정합니다.
 - 기본값: `host: "127.0.0.1"`, `port: 4123`, `workspaceRoot: "."`.
 - 모노레포처럼 실제 Angular 앱이 하위 폴더에 있으면 `workspaceRoot`를 그 **상대 경로**로 수정하세요. (예: `apps/web`)
-- `.gitignore`가 있으면 `npx locatorjs-config`가 `.open-in-editor/`를 자동 추가합니다. 커밋하려면 해당 항목을 제거하세요.
+- `.gitignore`가 있으면 `npx locatorjs-config`가 `.open-in-editor/`를 자동 추가합니다. 커밋하려면 해당 항목을 제거하세요. (인증 토큰은 `.open-in-editor/.gitignore`로 계속 제외됩니다)
 
 예시:
 
@@ -110,7 +110,6 @@ bootstrapApplication(AppComponent, appConfig)
   "workspaceRoot": ".",
   "editor": "cursor",
   "fallbackEditor": "code",
-  "authToken": "locatorjs-config가 자동 생성",
   "scan": {
     "includeGlobs": [
       "src/**/*.{ts,tsx,js,jsx}",
@@ -138,14 +137,18 @@ bootstrapApplication(AppComponent, appConfig)
 - `workspaceRoot`: 명령 실행 위치 기준 Angular 워크스페이스 루트 상대 경로입니다.
 - `editor`: 기본 에디터입니다 (`cursor`, `code`, `webstorm`).
 - `fallbackEditor`: 기본 에디터 실행 실패 시 사용할 대체 에디터입니다.
-- `authToken`: open-in-editor 서버 요청 검증 토큰입니다. `locatorjs-config`가 자동 생성합니다.
+- `authToken` (레거시, 선택): `.open-in-editor/auth-token`의 토큰 대신 사용할 값입니다. 이제 `locatorjs-config`가 이 필드를 쓰지 않으며, 커밋하지 않는 것을 권장합니다.
 - `scan.includeGlobs`: 컴포넌트 소스 파일 탐색 대상 glob 목록입니다.
 - `scan.excludeGlobs`: 컴포넌트 스캔에서 제외할 glob 목록입니다.
 
-**authToken 동작 방식 (0.5.0)**
+**인증 토큰과 요청 보호**
 
-- `locatorjs-config`가 프로젝트별 `authToken`을 `ngx-locatorjs.config.json`에 자동 생성합니다.
+- `locatorjs-config`가 기기별 토큰을 `.open-in-editor/auth-token`(gitignore 대상)에 생성합니다. 그래서 `ngx-locatorjs.config.json`에는 비밀 값이 없고, 커밋해서 팀과 공유해도 됩니다.
+- 공유된 config를 쓰는 팀원은 `npx locatorjs-config`를 실행하고 덮어쓰기 질문에 `N`으로 답하면 config는 그대로 두고 로컬 토큰만 생성됩니다.
+- 토큰 우선순위(opener와 proxy 동일): `OPEN_IN_EDITOR_TOKEN` 환경 변수 > config의 `authToken`(레거시) > `.open-in-editor/auth-token`.
 - `ngx-locatorjs.proxy.cjs`가 해당 토큰을 읽어 opener 라우트로 `x-locatorjs-token` 헤더를 전달합니다.
+- proxy가 모든 요청에 토큰을 붙이기 때문에, opener는 다른 웹사이트가 브라우저를 통해 보낸 요청(localhost가 아닌 출처의 `Sec-Fetch-Site: cross-site`)과, loopback에서만 대기할 때 `Host`가 loopback 주소가 아닌 요청(DNS rebinding)을 거부합니다.
+- `ng serve --host 0.0.0.0`으로 실행하면 dev 서버에 접근할 수 있는 누구나 proxy를 통해 opener 라우트를 쓸 수 있습니다. 신뢰할 수 있는 네트워크에서만 사용하세요.
 - Angular proxy 없이 opener 엔드포인트를 직접 호출할 경우 `installAngularLocator(...)`에 `authToken`을 전달해야 인증됩니다.
 - `401 Unauthorized`가 발생하면 `npx locatorjs-config`를 다시 실행해 config/proxy를 재생성하세요.
 
@@ -205,7 +208,7 @@ module.exports = {
 9. 포트 충돌
    `ngx-locatorjs.config.json`의 `port`만 수정하면 됩니다
 10. opener 라우트에서 401 발생
-    `npx locatorjs-config` 재실행으로 토큰/프록시 헤더를 다시 생성하거나, 프록시 없이 직접 호출 시 `installAngularLocator`에 `authToken` 전달
+    `npx locatorjs-config`로 로컬 토큰을 생성한 뒤(기존 config 유지는 `N`) dev 서버를 재시작하거나, 프록시 없이 직접 호출 시 `installAngularLocator`에 `authToken` 전달
 
 **주의**
 
