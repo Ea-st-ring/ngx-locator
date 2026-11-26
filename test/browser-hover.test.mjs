@@ -135,7 +135,9 @@ const canLaunch = await (async () => {
     return false;
   }
 })();
-const browserTest = canLaunch ? test : test.skip;
+// Skipped locally without a Playwright browser, but never silently in CI: there a missing
+// browser fails the tests instead.
+const browserTest = canLaunch || process.env.CI ? test : test.skip;
 
 browserTest(
   'holding the modifier highlights the whole component without moving the mouse',
