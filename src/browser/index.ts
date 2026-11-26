@@ -12,6 +12,7 @@ type CmpMap = {
 type AngularGlobal = {
   getOwningComponent?: (el: Element) => unknown;
   getComponent?: (el: Element) => unknown;
+  getHostElement?: (component: object) => Element | null;
 };
 
 type RuntimeComponent = {
@@ -20,10 +21,14 @@ type RuntimeComponent = {
   };
 };
 
-type LocatorComponent = RuntimeComponent & {
-  __isMockComponent?: boolean;
-  __cmpInfo?: CmpInfo;
+type LocatorComponent = {
+  className: string;
+  info: CmpInfo;
+  /** Host element of the component whose template contains the target element. */
+  hostElement: Element | null;
 };
+
+export type ModifierKey = 'alt' | 'ctrl' | 'meta' | 'shift';
 
 export type AngularLocatorEndpoints = {
   openInEditor: string;
@@ -39,6 +44,16 @@ export type AngularLocatorOptions = {
   enableClick?: boolean;
   showTooltip?: boolean;
   showClickFeedback?: boolean;
+  /**
+   * Keys to hold for hover and click, joined with `+` (e.g. `'alt'`, `'ctrl+shift'`).
+   * Aliases: `option` = alt, `control` = ctrl, `cmd`/`command` = meta. Default: `'alt'`.
+   */
+  modifier?: string;
+  /**
+   * Extra key that opens the component `.ts` instead of the template. Default: `'shift'`.
+   * `false` disables it. Must not overlap with `modifier`.
+   */
+  componentModifier?: string | false;
   authToken?: string;
   debug?: boolean;
 };
@@ -51,6 +66,9 @@ type ResolvedOptions = {
   enableClick: boolean;
   showTooltip: boolean;
   showClickFeedback: boolean;
+  modifier: ModifierKey[];
+  /** Empty when disabled. */
+  componentModifier: ModifierKey[];
   authToken: string | null;
   debug: boolean;
 };
@@ -69,9 +87,116 @@ const DEFAULT_OPTIONS: ResolvedOptions = {
   enableClick: true,
   showTooltip: true,
   showClickFeedback: true,
+  modifier: ['alt'],
+  componentModifier: ['shift'],
   authToken: null,
   debug: false,
 };
+
+const MODIFIER_ALIASES: Record<string, ModifierKey> = {
+  alt: 'alt',
+  option: 'alt',
+  opt: 'alt',
+  ctrl: 'ctrl',
+  control: 'ctrl',
+  meta: 'meta',
+  cmd: 'meta',
+  command: 'meta',
+  shift: 'shift',
+};
+
+/** Parses `'ctrl+shift'`-style strings. Returns null when any part is unknown or none is given. */
+function parseModifiers(value: string): ModifierKey[] | null {
+  const parts = value
+    .split('+')
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean);
+  if (parts.length === 0) return null;
+
+  const keys: ModifierKey[] = [];
+  for (const part of parts) {
+    const key = MODIFIER_ALIASES[part];
+    if (!key) return null;
+    if (!keys.includes(key)) keys.push(key);
+  }
+  return keys;
+}
+
+function resolveModifierOptions(options: AngularLocatorOptions): {
+  modifier: ModifierKey[];
+  componentModifier: ModifierKey[];
+} {
+  let modifier = DEFAULT_OPTIONS.modifier;
+  if (options.modifier !== undefined) {
+    const parsed = parseModifiers(options.modifier);
+    if (parsed) {
+      modifier = parsed;
+    } else {
+      console.warn(
+        `[angular-locator] Invalid modifier "${options.modifier}", using "alt". Use keys alt, ctrl, meta, shift joined with "+".`,
+      );
+    }
+  }
+
+  let componentModifier = DEFAULT_OPTIONS.componentModifier;
+  if (options.componentModifier === false) {
+    componentModifier = [];
+  } else if (options.componentModifier !== undefined) {
+    const parsed = parseModifiers(options.componentModifier);
+    if (parsed) {
+      componentModifier = parsed;
+    } else {
+      console.warn(
+        `[angular-locator] Invalid componentModifier "${options.componentModifier}", using "shift".`,
+      );
+    }
+  }
+
+  if (componentModifier.some((key) => modifier.includes(key))) {
+    // An overlapping key would make every click open the .ts file.
+    console.warn(
+      `[angular-locator] componentModifier "${componentModifier.join('+')}" overlaps modifier "${modifier.join('+')}"; opening the .ts file by key is disabled. Set componentModifier to a different key.`,
+    );
+    componentModifier = [];
+  }
+
+  return { modifier, componentModifier };
+}
+
+function modifiersPressed(ev: MouseEvent | KeyboardEvent, keys: ModifierKey[]): boolean {
+  if (keys.length === 0) return false;
+  return keys.every((key) => {
+    if (key === 'alt') return ev.altKey;
+    if (key === 'ctrl') return ev.ctrlKey;
+    if (key === 'meta') return ev.metaKey;
+    return ev.shiftKey;
+  });
+}
+
+function isMacPlatform(): boolean {
+  const platform =
+    (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ??
+    navigator.platform ??
+    '';
+  return /mac|iphone|ipad/i.test(platform);
+}
+
+function formatModifiers(keys: ModifierKey[]): string {
+  const mac = isMacPlatform();
+  const labels: Record<ModifierKey, string> = {
+    alt: mac ? 'Option' : 'Alt',
+    ctrl: 'Ctrl',
+    meta: mac ? 'Cmd' : 'Meta',
+    shift: 'Shift',
+  };
+  return keys.map((key) => labels[key]).join('+');
+}
+
+/** Last few path segments, enough to recognize the file without the absolute prefix. */
+function shortenPath(filePath: string, segments = 3): string {
+  const parts = filePath.split(/[\\/]/).filter(Boolean);
+  return parts.length <= segments ? parts.join('/') : `…/${parts.slice(-segments).join('/')}`;
+}
 
 let OPTIONS: ResolvedOptions = DEFAULT_OPTIONS;
 let INSTALLED = false;
@@ -169,13 +294,15 @@ async function ensureMap(forceRefresh = false): Promise<CmpMap> {
   }
 }
 
-function ensureMapIfNeeded() {
-  if (CMP_MAP || mapLoadPromise) return;
-  mapLoadPromise = ensureMap()
-    .catch(() => undefined)
-    .finally(() => {
+/** Loads the map once even when many hover events ask for it at the same time. */
+function ensureMapOnce(): Promise<CmpMap | undefined> {
+  if (CMP_MAP) return Promise.resolve(CMP_MAP);
+  if (!mapLoadPromise) {
+    mapLoadPromise = ensureMap().finally(() => {
       mapLoadPromise = null;
     });
+  }
+  return mapLoadPromise;
 }
 
 /**
@@ -284,20 +411,30 @@ function getAngularRuntimeComponent(el: Element): RuntimeComponent | null {
   return null;
 }
 
+function getHostElement(component: RuntimeComponent): Element | null {
+  const ng = (window as Window & { ng?: AngularGlobal }).ng;
+  if (typeof ng?.getHostElement !== 'function') return null;
+  try {
+    return ng.getHostElement(component as object) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function getNearestComponent(el: Element): LocatorComponent | null {
   if (!CMP_MAP) return null;
 
   const runtimeComponent = getAngularRuntimeComponent(el);
   const runtimeClassName = runtimeComponent?.constructor?.name;
-  if (!runtimeClassName) return null;
+  if (!runtimeComponent || !runtimeClassName) return null;
 
   const info = getComponentInfoByClassName(runtimeClassName);
   if (!info) return null;
 
   return {
-    constructor: { name: info.className },
-    __isMockComponent: true,
-    __cmpInfo: info,
+    className: info.className,
+    info,
+    hostElement: getHostElement(runtimeComponent),
   };
 }
 
@@ -347,6 +484,7 @@ function addStyles() {
   style.id = 'angular-locator-styles';
   style.textContent = `
     .dev-highlight-overlay {
+      box-sizing: border-box;
       position: fixed;
       pointer-events: none;
       z-index: 99998;
@@ -357,6 +495,14 @@ function addStyles() {
         0 0 0 1px rgba(96, 165, 250, 0.05) inset,
         0 4px 12px rgba(15, 23, 42, 0.18);
       transition: all 0.12s ease;
+    }
+    .dev-highlight-target {
+      box-sizing: border-box;
+      position: fixed;
+      pointer-events: none;
+      z-index: 99998;
+      border-radius: 4px;
+      border: 1px dashed rgba(96, 165, 250, 0.9);
     }
     .dev-tooltip {
       position: absolute;
@@ -372,6 +518,15 @@ function addStyles() {
       pointer-events: none;
       white-space: nowrap;
       letter-spacing: 0.2px;
+      line-height: 1.5;
+    }
+    .dev-tooltip-name {
+      color: #f8fafc;
+      font-weight: 600;
+    }
+    .dev-tooltip-path,
+    .dev-tooltip-hint {
+      color: #94a3b8;
     }
     .dev-click-feedback {
       position: fixed;
@@ -459,7 +614,11 @@ function findTemplatePosition(
   return { searchTerms };
 }
 
-async function handleAltOpen(ev: MouseEvent | PointerEvent, el: Element) {
+function isComponentModifierPressed(ev: MouseEvent | KeyboardEvent): boolean {
+  return modifiersPressed(ev, OPTIONS.componentModifier);
+}
+
+async function handleOpen(ev: MouseEvent | PointerEvent, el: Element) {
   if (!CMP_MAP) {
     try {
       await ensureMap();
@@ -473,22 +632,23 @@ async function handleAltOpen(ev: MouseEvent | PointerEvent, el: Element) {
   const cmp = getNearestComponent(el);
   if (!cmp) return;
 
-  const className = cmp.constructor?.name;
-  const info: CmpInfo | undefined = cmp.__cmpInfo;
-  if (!info) return;
+  const openComponentFile = isComponentModifierPressed(ev);
+  const { className, info } = cmp;
 
-  const targetFile = ev.shiftKey ? 'component' : info.templateUrl ? 'template' : 'component';
+  const targetFile = openComponentFile ? 'component' : info.templateUrl ? 'template' : 'component';
   showClickFeedback(ev.clientX, ev.clientY, `Opening ${className} ${targetFile}...`);
 
-  try {
-    if (ev.shiftKey) {
-      await openFile(info.filePath);
-    } else if (info.templateUrl) {
-      const position = findTemplatePosition(el, el);
-      await openFileWithSearch(info.templateUrl, position.searchTerms);
+  const open = async (target: CmpInfo) => {
+    if (openComponentFile || !target.templateUrl) {
+      await openFile(target.filePath);
     } else {
-      await openFile(info.filePath);
+      const position = findTemplatePosition(el, el);
+      await openFileWithSearch(target.templateUrl, position.searchTerms);
     }
+  };
+
+  try {
+    await open(info);
   } catch (e) {
     if (OPTIONS.debug) {
       console.warn('[angular-locator] File opening failed, refreshing component map:', e);
@@ -497,20 +657,12 @@ async function handleAltOpen(ev: MouseEvent | PointerEvent, el: Element) {
 
     await refreshComponentMap();
 
-    const newCmp = getNearestComponent(el);
-    const newInfo: CmpInfo | undefined = newCmp?.__cmpInfo;
+    const newInfo = getNearestComponent(el)?.info;
 
     if (newInfo) {
       showClickFeedback(ev.clientX, ev.clientY, 'Retrying with updated map...');
       try {
-        if (ev.shiftKey) {
-          await openFile(newInfo.filePath);
-        } else if (newInfo.templateUrl) {
-          const position = findTemplatePosition(el, el);
-          await openFileWithSearch(newInfo.templateUrl, position.searchTerms);
-        } else {
-          await openFile(newInfo.filePath);
-        }
+        await open(newInfo);
       } catch (retryError) {
         if (OPTIONS.debug) {
           console.warn('[angular-locator] Retry failed:', retryError);
@@ -523,9 +675,9 @@ async function handleAltOpen(ev: MouseEvent | PointerEvent, el: Element) {
   }
 }
 
-async function handleAltClick(ev: MouseEvent) {
+async function handleClick(ev: MouseEvent) {
   if (!OPTIONS.enableClick) return;
-  if (!ev.altKey) return;
+  if (!modifiersPressed(ev, OPTIONS.modifier)) return;
 
   ev.preventDefault();
   ev.stopPropagation();
@@ -533,74 +685,122 @@ async function handleAltClick(ev: MouseEvent) {
   const el = ev.target as Element | null;
   if (!el) return;
 
-  await handleAltOpen(ev, el);
+  await handleOpen(ev, el);
 }
 
-let isAltPressed = false;
+/**
+ * On macOS, Ctrl+click opens the context menu and no click event follows,
+ * so a modifier that includes Ctrl is handled through `contextmenu` there.
+ */
+async function handleContextMenu(ev: MouseEvent) {
+  if (!OPTIONS.enableClick) return;
+  if (!ev.ctrlKey || !isMacPlatform()) return;
+  if (!modifiersPressed(ev, OPTIONS.modifier)) return;
+
+  ev.preventDefault();
+  ev.stopPropagation();
+
+  const el = ev.target as Element | null;
+  if (!el) return;
+
+  await handleOpen(ev, el);
+}
+
+type PointerState = { target: Element; x: number; y: number };
+
+let hoverActive = false;
+/** Latest pointer position, so holding the modifier highlights without moving the mouse. */
+let lastPointer: PointerState | null = null;
 let currentTooltip: HTMLElement | null = null;
 let currentHighlightOverlay: HTMLElement | null = null;
-let lastHighlightedElement: Element | null = null;
+let currentTargetOverlay: HTMLElement | null = null;
+let lastRenderKey: { target: Element; componentMode: boolean } | null = null;
 
 function removeHighlights() {
-  if (currentHighlightOverlay) {
-    currentHighlightOverlay.remove();
-    currentHighlightOverlay = null;
-  }
-  if (currentTooltip) {
-    currentTooltip.remove();
-    currentTooltip = null;
-  }
+  currentHighlightOverlay?.remove();
+  currentHighlightOverlay = null;
+  currentTargetOverlay?.remove();
+  currentTargetOverlay = null;
+  currentTooltip?.remove();
+  currentTooltip = null;
+  lastRenderKey = null;
 }
 
-async function handleMouseMove(ev: MouseEvent) {
-  if (!OPTIONS.enableHover) return;
-  if (!isAltPressed || !ev.altKey) {
-    if (isAltPressed && !ev.altKey) {
-      isAltPressed = false;
-      document.removeEventListener('mousemove', handleMouseMove);
-      removeHighlights();
-    }
-    return;
+function deactivateHover() {
+  hoverActive = false;
+  removeHighlights();
+}
+
+function createOverlay(className: string, rect: DOMRect): HTMLElement {
+  const overlay = document.createElement('div');
+  overlay.className = className;
+  overlay.style.left = rect.left + 'px';
+  overlay.style.top = rect.top + 'px';
+  overlay.style.width = rect.width + 'px';
+  overlay.style.height = rect.height + 'px';
+  document.body.appendChild(overlay);
+  return overlay;
+}
+
+function buildTooltip(cmp: LocatorComponent, componentMode: boolean): HTMLElement {
+  const { className, info } = cmp;
+  const opensTemplate = !componentMode && Boolean(info.templateUrl);
+  const targetPath = opensTemplate ? info.templateUrl! : info.filePath;
+
+  const hints: string[] = [];
+  if (info.templateUrl) hints.push('Click: template');
+  else hints.push('Click: .ts');
+  if (info.templateUrl && OPTIONS.componentModifier.length > 0) {
+    hints.push(`${formatModifiers(OPTIONS.componentModifier)}+Click: .ts`);
   }
 
-  if (!CMP_MAP) {
-    ensureMapIfNeeded();
+  const tooltip = document.createElement('div');
+  tooltip.className = 'dev-tooltip';
+  const rows: Array<[string, string]> = [
+    ['dev-tooltip-name', className],
+    ['dev-tooltip-path', shortenPath(targetPath)],
+    ['dev-tooltip-hint', hints.join(' • ')],
+  ];
+  for (const [rowClass, text] of rows) {
+    const row = document.createElement('div');
+    row.className = rowClass;
+    row.textContent = text;
+    tooltip.appendChild(row);
+  }
+  return tooltip;
+}
+
+function renderHover(pointer: PointerState, componentMode: boolean) {
+  if (
+    lastRenderKey &&
+    lastRenderKey.target === pointer.target &&
+    lastRenderKey.componentMode === componentMode
+  ) {
     return;
   }
-
-  const el = ev.target as Element;
-  if (lastHighlightedElement === el) return;
-  lastHighlightedElement = el;
 
   removeHighlights();
+  lastRenderKey = { target: pointer.target, componentMode };
 
-  const cmp = getNearestComponent(el);
+  const cmp = getNearestComponent(pointer.target);
   if (!cmp) return;
 
-  const className = cmp.constructor?.name;
-  const info: CmpInfo | undefined = cmp.__cmpInfo;
-  if (!className || !info) return;
-
   try {
-    const rect = el.getBoundingClientRect();
-
-    const overlay = document.createElement('div');
-    overlay.className = 'dev-highlight-overlay';
-    overlay.style.left = rect.left + 'px';
-    overlay.style.top = rect.top + 'px';
-    overlay.style.width = rect.width + 'px';
-    overlay.style.height = rect.height + 'px';
-
-    document.body.appendChild(overlay);
-    currentHighlightOverlay = overlay;
+    // Outline the whole component so it is clear which file a click opens,
+    // and mark the hovered element the template search will look for.
+    const host = cmp.hostElement ?? pointer.target;
+    currentHighlightOverlay = createOverlay('dev-highlight-overlay', host.getBoundingClientRect());
+    if (host !== pointer.target) {
+      currentTargetOverlay = createOverlay(
+        'dev-highlight-target',
+        pointer.target.getBoundingClientRect(),
+      );
+    }
 
     if (OPTIONS.showTooltip) {
-      const tooltip = document.createElement('div');
-      tooltip.className = 'dev-tooltip';
-      tooltip.textContent = `${className} • Click: template • Shift+Click: .ts`;
-      tooltip.style.left = ev.clientX + 10 + 'px';
-      tooltip.style.top = ev.clientY - 30 + 'px';
-
+      const tooltip = buildTooltip(cmp, componentMode);
+      tooltip.style.left = pointer.x + 10 + 'px';
+      tooltip.style.top = pointer.y + 14 + 'px';
       document.body.appendChild(tooltip);
       currentTooltip = tooltip;
     }
@@ -611,21 +811,40 @@ async function handleMouseMove(ev: MouseEvent) {
   }
 }
 
-function handleKeyDown(ev: KeyboardEvent) {
+/** Shows or hides the hover UI for the current modifier state. */
+async function updateHover(ev: MouseEvent | KeyboardEvent) {
   if (!OPTIONS.enableHover) return;
-  if ((ev.key === 'Alt' || ev.key === 'AltGraph') && !isAltPressed) {
-    isAltPressed = true;
-    document.addEventListener('mousemove', handleMouseMove);
+
+  if (!modifiersPressed(ev, OPTIONS.modifier)) {
+    if (hoverActive) deactivateHover();
+    return;
   }
+  hoverActive = true;
+  if (!lastPointer) return;
+
+  if (!CMP_MAP) {
+    try {
+      await ensureMapOnce();
+    } catch {
+      return;
+    }
+    // The modifier may have been released while the map was loading.
+    if (!hoverActive || !lastPointer) return;
+  }
+
+  renderHover(lastPointer, isComponentModifierPressed(ev));
 }
 
-function handleKeyUp(ev: KeyboardEvent) {
-  if (!OPTIONS.enableHover) return;
-  if ((ev.key === 'Alt' || ev.key === 'AltGraph' || !ev.altKey) && isAltPressed) {
-    isAltPressed = false;
-    document.removeEventListener('mousemove', handleMouseMove);
-    removeHighlights();
-  }
+function handleMouseMove(ev: MouseEvent) {
+  const target = ev.target;
+  if (!(target instanceof Element)) return;
+  lastPointer = { target, x: ev.clientX, y: ev.clientY };
+  if (!hoverActive && !modifiersPressed(ev, OPTIONS.modifier)) return;
+  void updateHover(ev);
+}
+
+function handleKeyChange(ev: KeyboardEvent) {
+  void updateHover(ev);
 }
 
 async function installInternal(options: ResolvedOptions) {
@@ -650,11 +869,15 @@ async function installInternal(options: ResolvedOptions) {
   }
 
   if (OPTIONS.enableClick) {
-    document.addEventListener('click', handleAltClick, true);
+    document.addEventListener('click', handleClick, true);
+    if (OPTIONS.modifier.includes('ctrl')) {
+      document.addEventListener('contextmenu', handleContextMenu, true);
+    }
   }
   if (OPTIONS.enableHover) {
-    document.addEventListener('keydown', handleKeyDown);
-    document.addEventListener('keyup', handleKeyUp);
+    document.addEventListener('mousemove', handleMouseMove, { passive: true });
+    document.addEventListener('keydown', handleKeyChange);
+    document.addEventListener('keyup', handleKeyChange);
   }
 
   window.addEventListener(
@@ -673,10 +896,7 @@ async function installInternal(options: ResolvedOptions) {
     }
   });
 
-  window.addEventListener('blur', () => {
-    isAltPressed = false;
-    removeHighlights();
-  });
+  window.addEventListener('blur', deactivateHover);
 }
 
 export async function installAngularLocator(options: AngularLocatorOptions = {}) {
@@ -685,6 +905,7 @@ export async function installAngularLocator(options: AngularLocatorOptions = {})
   const mergedOptions: ResolvedOptions = {
     ...DEFAULT_OPTIONS,
     ...options,
+    ...resolveModifierOptions(options),
     authToken: options.authToken ?? DEFAULT_OPTIONS.authToken,
     endpoints: {
       ...DEFAULT_ENDPOINTS,
@@ -716,4 +937,8 @@ export function isAngularLocatorInstalled() {
 
 export const _internal = {
   ensureMap,
+  parseModifiers,
+  resolveModifierOptions,
+  modifiersPressed,
+  shortenPath,
 };

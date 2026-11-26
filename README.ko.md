@@ -7,7 +7,8 @@ Angular 인기가 적어서인지 [LocatorJs](https://www.locatorjs.com/)와 같
 
 - Alt+클릭: 템플릿(.html) 열기
 - Alt+Shift+클릭: 컴포넌트(.ts) 열기
-- Alt 키 홀드: 컴포넌트 하이라이트 + 툴팁 표시
+- Alt 키 홀드: 컴포넌트 전체와 가리킨 요소를 하이라이트하고, 열릴 파일을 툴팁에 표시
+- 조작키 변경 가능 (아래 **런타임 옵션** 참고)
 - Antigravity IDE, Cursor, Zed, VS Code, WebStorm 지원
 
 **Angular 버전 지원**
@@ -64,6 +65,26 @@ bootstrapApplication(AppComponent, appConfig)
   })
   .catch((err) => console.error(err));
 ```
+
+**런타임 옵션**
+
+`installAngularLocator(...)`에 전달합니다.
+
+| 옵션                                | 기본값    | 설명                                                                                                                           |
+| ----------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `enableNetwork`                     | `false`   | 오프너 호출에 필요합니다(`true`). 요청은 localhost로 제한됩니다.                                                               |
+| `modifier`                          | `'alt'`   | hover와 클릭에 누를 키. `+`로 조합합니다(`'alt'`, `'ctrl+shift'`, `'meta+shift'`). 별칭: `option`, `control`, `cmd`/`command`. |
+| `componentModifier`                 | `'shift'` | 템플릿 대신 `.ts` 파일을 여는 추가 키. `false`면 끕니다. `modifier`와 겹치면 안 됩니다.                                        |
+| `enableHover` / `enableClick`       | `true`    | hover 하이라이트나 클릭 열기를 끕니다.                                                                                         |
+| `showTooltip` / `showClickFeedback` | `true`    | hover 툴팁이나 "Opening…" 알림을 숨깁니다.                                                                                     |
+| `debug`                             | `false`   | 실패 내용을 콘솔에 출력합니다.                                                                                                 |
+
+```ts
+// 예: 일부 Linux 데스크톱은 Alt+드래그로 창을 옮깁니다.
+m.installAngularLocator({ enableNetwork: true, modifier: 'ctrl+shift', componentModifier: 'alt' });
+```
+
+macOS에서는 Ctrl+클릭이 컨텍스트 메뉴를 여는데, 로케이터가 이를 처리하므로 `ctrl` 조합도 동작합니다.
 
 **Angular dev server 예시**
 

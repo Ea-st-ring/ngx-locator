@@ -17,7 +17,8 @@ Inspired by [locatorjs.com](https://www.locatorjs.com/).
 
 - **Alt + Click**: open template (.html)
 - **Alt + Shift + Click**: open component (.ts)
-- **Hold Alt**: highlight component + tooltip
+- **Hold Alt**: highlight the component and the hovered element, with a tooltip showing the file that will open
+- Keys are configurable (see [Runtime Options](#runtime-options))
 - Supports **Antigravity IDE**, **Cursor**, **Zed**, **VS Code**, **WebStorm**
 
 ## Angular Version Support
@@ -90,6 +91,26 @@ bootstrapApplication(AppComponent, appConfig)
   })
   .catch((err) => console.error(err));
 ```
+
+## Runtime Options
+
+Pass options to `installAngularLocator(...)`:
+
+| Option                              | Default   | Description                                                                                                                                 |
+| ----------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enableNetwork`                     | `false`   | Required (`true`) to call the opener. Requests are limited to localhost.                                                                    |
+| `modifier`                          | `'alt'`   | Keys to hold for hover and click, joined with `+` (`'alt'`, `'ctrl+shift'`, `'meta+shift'`). Aliases: `option`, `control`, `cmd`/`command`. |
+| `componentModifier`                 | `'shift'` | Extra key that opens the `.ts` file instead of the template. `false` disables it. Must not overlap with `modifier`.                         |
+| `enableHover` / `enableClick`       | `true`    | Turn hover highlighting or click-to-open off.                                                                                               |
+| `showTooltip` / `showClickFeedback` | `true`    | Hide the hover tooltip or the "Opening…" toast.                                                                                             |
+| `debug`                             | `false`   | Log failures to the console.                                                                                                                |
+
+```ts
+// Example: some Linux desktops use Alt+drag to move windows.
+m.installAngularLocator({ enableNetwork: true, modifier: 'ctrl+shift', componentModifier: 'alt' });
+```
+
+On macOS, Ctrl+click opens the context menu; the locator handles it, so `ctrl` modifiers work there too.
 
 ## Config Guide (`ngx-locatorjs.config.json`)
 
