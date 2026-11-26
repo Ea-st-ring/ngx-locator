@@ -2,6 +2,20 @@ type CmpInfo = {
   className: string;
   filePath: string;
   templateUrl?: string;
+  /** 1-based line of the class declaration. */
+  line?: number;
+  /** Component selector from the scan; absent in maps written by older versions. */
+  selector?: string;
+};
+
+/**
+ * Set by Angular on component definitions in dev builds: className since 17,
+ * filePath (relative to the TypeScript root) and lineNumber since 19.
+ */
+type ClassDebugInfo = {
+  className: string;
+  filePath?: string;
+  lineNumber?: number;
 };
 
 type CmpMap = {
@@ -26,6 +40,8 @@ type LocatorComponent = {
   info: CmpInfo;
   /** Host element of the component whose template contains the target element. */
   hostElement: Element | null;
+  /** Set while the template path from Angular's debug info is still being resolved. */
+  pending?: Promise<CmpInfo | null>;
 };
 
 export type ModifierKey = 'alt' | 'ctrl' | 'meta' | 'shift';
@@ -34,6 +50,8 @@ export type AngularLocatorEndpoints = {
   openInEditor: string;
   openInEditorSearch: string;
   componentMap: string;
+  /** Resolves Angular debug info (file + class) to the component's files. */
+  resolveComponent: string;
 };
 
 export type AngularLocatorOptions = {
@@ -77,6 +95,8 @@ const DEFAULT_ENDPOINTS: AngularLocatorEndpoints = {
   openInEditor: '/__open-in-editor',
   openInEditorSearch: '/__open-in-editor-search',
   componentMap: '/__cmp-map',
+  // Shares the /__open-in-editor prefix so existing proxy configs forward it.
+  resolveComponent: '/__open-in-editor-resolve',
 };
 
 const DEFAULT_OPTIONS: ResolvedOptions = {
@@ -359,13 +379,31 @@ function selectBestMatchingFile(candidates: string[]): string {
   return bestMatch;
 }
 
-function getComponentInfoByClassName(className: string): CmpInfo | null {
+/** True when the host element's tag is one of the selector's comma-separated parts. */
+function selectorMatchesHost(selector: string, hostElement: Element): boolean {
+  const tag = hostElement.tagName.toLowerCase();
+  return selector.split(',').some((part) => part.trim().toLowerCase() === tag);
+}
+
+function getComponentInfoByClassName(
+  className: string,
+  hostElement: Element | null = null,
+): CmpInfo | null {
   if (!CMP_MAP) return null;
   const classNameCandidates = getClassNameCandidates(className);
 
   for (const candidate of classNameCandidates) {
-    const candidates = CMP_MAP.filePathsByClassName?.[candidate];
+    let candidates = CMP_MAP.filePathsByClassName?.[candidate];
     if (!candidates?.length) continue;
+
+    // Same-named components usually differ by selector; the URL heuristic is the last resort.
+    if (candidates.length > 1 && hostElement) {
+      const bySelector = candidates.filter((filePath) => {
+        const selector = CMP_MAP!.detailByFilePath[filePath]?.selector;
+        return selector ? selectorMatchesHost(selector, hostElement) : false;
+      });
+      if (bySelector.length > 0) candidates = bySelector;
+    }
 
     const filePath = selectBestMatchingFile(candidates);
     const info = CMP_MAP.detailByFilePath[filePath] ?? null;
@@ -421,21 +459,123 @@ function getHostElement(component: RuntimeComponent): Element | null {
   }
 }
 
+function getClassDebugInfo(component: RuntimeComponent): ClassDebugInfo | null {
+  // '\u0275cmp' is Angular's component definition property, escaped to keep the output ASCII.
+  const type = component.constructor as Record<string, { debugInfo?: ClassDebugInfo }> | undefined;
+  const debugInfo = type?.['\u0275cmp']?.debugInfo;
+  return debugInfo && typeof debugInfo.className === 'string' ? debugInfo : null;
+}
+
+/** Resolved debug-info lookups by `filePath#className`; null when the opener could not resolve. */
+const resolvedComponents = new Map<string, CmpInfo | null>();
+const pendingResolutions = new Map<string, Promise<CmpInfo | null>>();
+
+function resolveDebugInfo(debugInfo: ClassDebugInfo & { filePath: string }) {
+  const key = `${debugInfo.filePath}#${debugInfo.className}`;
+  const pending = pendingResolutions.get(key);
+  if (pending) return pending;
+
+  const promise = (async (): Promise<CmpInfo | null> => {
+    const url = attachAuthToken(
+      assertNetworkAllowed(
+        `${OPTIONS.endpoints.resolveComponent}?file=${encodeURIComponent(debugInfo.filePath)}&className=${encodeURIComponent(debugInfo.className)}`,
+      ),
+    );
+    const res = await fetch(url, { headers: getAuthHeaders() });
+    if (!res.ok) {
+      // e.g. an older opener without this route: fall back to the component map.
+      if (OPTIONS.debug) {
+        console.warn(`[angular-locator] Could not resolve ${key} (HTTP ${res.status})`);
+      }
+      resolvedComponents.set(key, null);
+      return null;
+    }
+    const body = (await res.json()) as {
+      className: string;
+      filePath: string;
+      templateUrl: string | null;
+      line: number;
+    };
+    const info: CmpInfo = {
+      className: body.className,
+      filePath: body.filePath,
+      templateUrl: body.templateUrl ?? undefined,
+      line: body.line,
+    };
+    resolvedComponents.set(key, info);
+    return info;
+  })()
+    .catch((e) => {
+      // Network errors are not cached, so the next attempt retries.
+      if (OPTIONS.debug) console.warn('[angular-locator] Resolve failed:', e);
+      return null;
+    })
+    .finally(() => pendingResolutions.delete(key));
+
+  pendingResolutions.set(key, promise);
+  return promise;
+}
+
+/**
+ * Finds the component whose template contains `el` and the files to open.
+ * Angular's class debug info identifies the exact file even when several components
+ * share a class name; the scanned component map is the fallback (older Angular,
+ * production-like builds, or an opener that cannot resolve).
+ * Returns synchronously for hover: an unresolved debug-info component comes back with
+ * `pending` and a provisional .ts-only info.
+ */
 function getNearestComponent(el: Element): LocatorComponent | null {
-  if (!CMP_MAP) return null;
-
   const runtimeComponent = getAngularRuntimeComponent(el);
-  const runtimeClassName = runtimeComponent?.constructor?.name;
-  if (!runtimeComponent || !runtimeClassName) return null;
+  if (!runtimeComponent) return null;
 
-  const info = getComponentInfoByClassName(runtimeClassName);
+  const debugInfo = getClassDebugInfo(runtimeComponent);
+  const className = debugInfo?.className ?? runtimeComponent.constructor?.name;
+  if (!className) return null;
+  const hostElement = getHostElement(runtimeComponent);
+
+  if (debugInfo?.filePath) {
+    const key = `${debugInfo.filePath}#${debugInfo.className}`;
+    const resolved = resolvedComponents.get(key);
+    if (resolved) return { className, info: resolved, hostElement };
+    if (!resolvedComponents.has(key) && OPTIONS.enableNetwork) {
+      const provisional: CmpInfo = {
+        className,
+        filePath: debugInfo.filePath,
+        line: debugInfo.lineNumber,
+      };
+      return {
+        className,
+        info: provisional,
+        hostElement,
+        pending: resolveDebugInfo({ ...debugInfo, filePath: debugInfo.filePath }),
+      };
+    }
+  }
+
+  if (!CMP_MAP) return null;
+  const info = getComponentInfoByClassName(className, hostElement);
   if (!info) return null;
+  return { className: info.className, info, hostElement };
+}
 
-  return {
-    className: info.className,
-    info,
-    hostElement: getHostElement(runtimeComponent),
-  };
+/** Like getNearestComponent, but waits for debug-info resolution and the component map. */
+async function findNearestComponent(el: Element): Promise<LocatorComponent | null> {
+  const cmp = getNearestComponent(el);
+  if (cmp?.pending) {
+    await cmp.pending;
+    return findNearestComponent(el);
+  }
+  if (cmp || CMP_MAP) return cmp;
+
+  try {
+    await ensureMapOnce();
+  } catch (e) {
+    if (OPTIONS.debug) {
+      console.warn('[angular-locator] Failed to load component map:', e);
+    }
+    return null;
+  }
+  return getNearestComponent(el);
 }
 
 /**
@@ -619,17 +759,7 @@ function isComponentModifierPressed(ev: MouseEvent | KeyboardEvent): boolean {
 }
 
 async function handleOpen(ev: MouseEvent | PointerEvent, el: Element) {
-  if (!CMP_MAP) {
-    try {
-      await ensureMap();
-    } catch (e) {
-      if (OPTIONS.debug) {
-        console.warn('[angular-locator] Failed to load component map on click:', e);
-      }
-    }
-  }
-
-  const cmp = getNearestComponent(el);
+  const cmp = await findNearestComponent(el);
   if (!cmp) return;
 
   const openComponentFile = isComponentModifierPressed(ev);
@@ -640,7 +770,7 @@ async function handleOpen(ev: MouseEvent | PointerEvent, el: Element) {
 
   const open = async (target: CmpInfo) => {
     if (openComponentFile || !target.templateUrl) {
-      await openFile(target.filePath);
+      await openFile(target.filePath, target.line ?? 1);
     } else {
       const position = findTemplatePosition(el, el);
       await openFileWithSearch(target.templateUrl, position.searchTerms);
@@ -784,6 +914,15 @@ function renderHover(pointer: PointerState, componentMode: boolean) {
 
   const cmp = getNearestComponent(pointer.target);
   if (!cmp) return;
+  if (cmp.pending) {
+    // Re-render with the resolved template path if the pointer is still there.
+    void cmp.pending.then(() => {
+      if (hoverActive && lastPointer?.target === pointer.target) {
+        lastRenderKey = null;
+        renderHover(lastPointer, componentMode);
+      }
+    });
+  }
 
   try {
     // Outline the whole component so it is clear which file a click opens,
@@ -822,7 +961,9 @@ async function updateHover(ev: MouseEvent | KeyboardEvent) {
   hoverActive = true;
   if (!lastPointer) return;
 
-  if (!CMP_MAP) {
+  const componentMode = isComponentModifierPressed(ev);
+  if (!CMP_MAP && !getNearestComponent(lastPointer.target)) {
+    // Components without debug info need the map; load it, then render.
     try {
       await ensureMapOnce();
     } catch {
@@ -832,7 +973,7 @@ async function updateHover(ev: MouseEvent | KeyboardEvent) {
     if (!hoverActive || !lastPointer) return;
   }
 
-  renderHover(lastPointer, isComponentModifierPressed(ev));
+  renderHover(lastPointer, componentMode);
 }
 
 function handleMouseMove(ev: MouseEvent) {

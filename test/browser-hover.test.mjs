@@ -57,7 +57,7 @@ const PAGE = `<!doctype html>
 </script>
 </body></html>`;
 
-async function startServer(t) {
+async function startServer(t, { page = PAGE, map = CMP_MAP } = {}) {
   const requests = [];
   const locatorJs = fs.readFileSync(path.join(repoRoot, 'dist/browser/index.js'));
   const server = http.createServer((req, res) => {
@@ -67,30 +67,53 @@ async function startServer(t) {
       return res.end(locatorJs);
     }
     if (url.pathname === '/__cmp-map') {
+      if (!map) {
+        res.statusCode = 404;
+        return res.end('component-map.json not found');
+      }
       res.setHeader('Content-Type', 'application/json');
-      return res.end(JSON.stringify(CMP_MAP));
+      return res.end(JSON.stringify(map));
+    }
+    if (url.pathname === '/__open-in-editor-resolve') {
+      // Mirrors the opener: the template sits next to the .ts with the same base name.
+      const file = url.searchParams.get('file');
+      res.setHeader('Content-Type', 'application/json');
+      return res.end(
+        JSON.stringify({
+          className: url.searchParams.get('className'),
+          filePath: `/w/${file}`,
+          templateUrl: `/w/${file.replace(/\.ts$/, '.html')}`,
+          line: 7,
+        }),
+      );
     }
     if (url.pathname.startsWith('/__open-in-editor')) {
-      requests.push({ route: url.pathname, file: url.searchParams.get('file') });
+      requests.push({
+        route: url.pathname,
+        file: url.searchParams.get('file'),
+        line: url.searchParams.get('line'),
+      });
       return res.end('ok');
     }
-    res.setHeader('Content-Type', 'text/html');
-    res.end(PAGE);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.end(page);
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
   return { origin: `http://localhost:${server.address().port}`, requests };
 }
 
-async function openPage(t, options = {}) {
-  const { origin, requests } = await startServer(t);
+async function openPage(t, options = {}, server = {}) {
+  const { origin, requests } = await startServer(t, server);
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage();
   await page.goto(`${origin}/?options=${encodeURIComponent(JSON.stringify(options))}`);
   await page.waitForFunction(() => window.__locatorReady === true);
-  const box = await page.locator('#buy').boundingBox();
-  return { page, requests, buyPoint: { x: box.x + 10, y: box.y + 10 } };
+  const box = (await page.locator('#buy').count())
+    ? await page.locator('#buy').boundingBox()
+    : null;
+  return { page, requests, buyPoint: box && { x: box.x + 10, y: box.y + 10 } };
 }
 
 async function waitForRequest(requests, count) {
@@ -191,4 +214,103 @@ browserTest('custom modifier keys replace Alt and Shift', async (t) => {
   // Each click opens exactly once (on macOS, Ctrl+click arrives as contextmenu, not click).
   await new Promise((resolve) => setTimeout(resolve, 200));
   assert.equal(requests.length, 2);
+});
+
+// Two libraries each export a component named CardComponent. Angular 19+ dev builds attach
+// the source file to each class, so both resolve exactly without a component map.
+const SAME_NAME_PAGE = `<!doctype html>
+<html><body style="margin:0">
+<app-root style="display:block;padding:40px">
+  <lib-a-card style="display:block;padding:20px;width:300px"><button id="a" style="width:120px;height:40px">A</button></lib-a-card>
+  <lib-b-card style="display:block;padding:20px;width:300px"><button id="b" style="width:120px;height:40px">B</button></lib-b-card>
+</app-root>
+<script type="module">
+  const withDebugInfo = (filePath) => {
+    const CardComponent = class CardComponent {};
+    CardComponent.ɵcmp = { debugInfo: { className: 'CardComponent', filePath, lineNumber: 7 } };
+    return new CardComponent();
+  };
+  const app = {};
+  const cards = new Map([
+    ['LIB-A-CARD', withDebugInfo('libs/a/src/card.component.ts')],
+    ['LIB-B-CARD', withDebugInfo('libs/b/src/card.component.ts')],
+  ]);
+  window.ng = {
+    getOwningComponent: (el) => cards.get(el.parentElement?.tagName) ?? app,
+    getHostElement: (cmp) =>
+      [...cards].find(([, c]) => c === cmp)?.[0].toLowerCase() &&
+      document.querySelector([...cards].find(([, c]) => c === cmp)[0].toLowerCase()),
+  };
+  const { installAngularLocator } = await import('/locator.js');
+  await installAngularLocator({ enableNetwork: true, showClickFeedback: false });
+  window.__locatorReady = true;
+</script>
+</body></html>`;
+
+browserTest(
+  'components sharing a class name open their own files via Angular debug info',
+  async (t) => {
+    const { page, requests } = await openPage(t, {}, { page: SAME_NAME_PAGE, map: null });
+    const center = async (selector) => {
+      const box = await page.locator(selector).boundingBox();
+      return { x: box.x + 10, y: box.y + 10 };
+    };
+    const a = await center('#a');
+    const b = await center('#b');
+
+    await page.mouse.move(b.x, b.y);
+    await page.keyboard.down('Alt');
+    // The tooltip first shows the .ts from debug info, then the resolved template.
+    await page.waitForFunction(() =>
+      document.querySelector('.dev-tooltip')?.textContent?.includes('b/src/card.component.html'),
+    );
+
+    await page.mouse.click(a.x, a.y);
+    assert.equal((await waitForRequest(requests, 1)).file, '/w/libs/a/src/card.component.html');
+    await page.mouse.click(b.x, b.y);
+    assert.equal((await waitForRequest(requests, 2)).file, '/w/libs/b/src/card.component.html');
+
+    await page.keyboard.down('Shift');
+    await page.mouse.click(b.x, b.y);
+    const component = await waitForRequest(requests, 3);
+    assert.equal(component.file, '/w/libs/b/src/card.component.ts');
+    assert.equal(component.line, '7');
+  },
+);
+
+// Angular 15-18 have no file path in debug info: the scanned selector tells the two apart.
+const SAME_NAME_NO_DEBUG_PAGE = SAME_NAME_PAGE.replace(
+  "CardComponent.ɵcmp = { debugInfo: { className: 'CardComponent', filePath, lineNumber: 7 } };",
+  '',
+);
+const sameNameMap = (selectors) => {
+  const detailByFilePath = {};
+  for (const lib of ['a', 'b']) {
+    const filePath = `/w/libs/${lib}/src/card.component.ts`;
+    detailByFilePath[filePath] = {
+      className: 'CardComponent',
+      filePath,
+      templateUrl: filePath.replace(/\.ts$/, '.html'),
+      ...(selectors ? { selector: `lib-${lib}-card` } : {}),
+    };
+  }
+  return { detailByFilePath, filePathsByClassName: {} };
+};
+
+browserTest('without debug info, same-named components are told apart by selector', async (t) => {
+  const { page, requests } = await openPage(
+    t,
+    {},
+    { page: SAME_NAME_NO_DEBUG_PAGE, map: sameNameMap(true) },
+  );
+  for (const [index, lib] of ['a', 'b'].entries()) {
+    const box = await page.locator(`#${lib}`).boundingBox();
+    await page.keyboard.down('Alt');
+    await page.mouse.click(box.x + 10, box.y + 10);
+    await page.keyboard.up('Alt');
+    assert.equal(
+      (await waitForRequest(requests, index + 1)).file,
+      `/w/libs/${lib}/src/card.component.html`,
+    );
+  }
 });

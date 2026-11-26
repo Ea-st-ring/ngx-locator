@@ -252,9 +252,17 @@ npm i -D npm-run-all
 - Show component highlight and tooltip while holding Alt
 - Works with single apps, Angular workspace, and Nx layouts
 
+### How components are matched
+
+| Angular | Matching                                                                                                                                                  |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 19+     | Exact file and class line from Angular's dev-mode debug info. Works even when several components share a class name; no scan needed for these components. |
+| 15–18   | Component map from `locatorjs-scan`, by class name. Same-named components are told apart by selector, then by the current URL.                            |
+
 ## Limitations
 
 - Not supported in SSR/SSG runtime (browser DOM only)
+- Angular 15–18: keep the map up to date (`npx locatorjs-open-in-editor --watch` or `npx locatorjs-scan`)
 
 ## Maintainer Note (Setup UX)
 
